@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy to Package.StoreAssociation.xml and fill in YOUR Partner Center values.
+     The local association file is ignored by Git and excluded from source ZIPs.
+     Empty placeholders intentionally cannot create a submission-ready package. -->
+<StoreAssociation xmlns="http://schemas.microsoft.com/appx/2010/store-association">
+  <PublisherDisplayName></PublisherDisplayName>
+  <Publisher></Publisher>
+  <ProductReservedInfo>
+    <MainPackageIdentityName></MainPackageIdentityName>
+  </ProductReservedInfo>
+</StoreAssociation>

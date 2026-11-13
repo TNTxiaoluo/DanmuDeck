@@ -1,0 +1,130 @@
+name: Build UWP x64
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, 'codex/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Validate source structure
+        shell: pwsh
+        run: ./tools/Check-Source.ps1
+      - name: Test application navigation startup
+        shell: pwsh
+        run: ./tools/Test-AppNavigation.ps1
+      - name: Test creator videos, dynamics, and comment targets
+        shell: pwsh
+        run: ./tools/Test-Creator.ps1
+      - name: Test creator comment draft and pending submissions
+        shell: pwsh
+        run: ./tools/Test-CreatorCommentDraft.ps1
+      - name: Test account library pagination and authorized episode playback
+        shell: pwsh
+        run: ./tools/Test-AccountLibrary.ps1
+      - name: Test personal library return navigation and account changes
+        shell: pwsh
+        run: ./tools/Test-AccountNavigation.ps1
+      - name: Test comment viewport clipping
+        shell: pwsh
+        run: ./tools/Test-CommentNavigation.ps1
+      - name: Test danmaku logic with UI stubs
+        shell: pwsh
+        run: ./tools/Test-Danmaku.ps1
+      - name: Test danmaku preferences, block rules, and rendering budgets
+        shell: pwsh
+        run: ./tools/Test-DanmakuSettings.ps1
+      - name: Test account cloud block-list parsing and authorization
+        shell: pwsh
+        run: ./tools/Test-DanmakuCloud.ps1
+      - name: Test person mask binary decoding and SVG input
+        shell: pwsh
+        run: ./tools/Test-DanmakuMask.ps1
+      - name: Test seekable stream with HTTP stubs
+        shell: pwsh
+        run: ./tools/Test-Stream.ps1
+      - name: Test WBI and cookies with WinRT stubs
+        shell: pwsh
+        run: ./tools/Test-ApiLogic.ps1
+      - name: Test signed video details and request failures
+        shell: pwsh
+        run: ./tools/Test-VideoDetail.ps1
+      - name: Test quality selection and stream variants
+        shell: pwsh
+        run: ./tools/Test-PlaybackQuality.ps1
+      - name: Test authorized DASH backup routing
+        shell: pwsh
+        run: ./tools/Test-DashRoutes.ps1
+      - name: Test bounded starvation recovery
+        shell: pwsh
+        run: ./tools/Test-PlaybackRecovery.ps1
+      - name: Test bounded source selection on playback device
+        shell: pwsh
+        run: ./tools/Test-PlaybackRouteSelector.ps1
+      - name: Test inline native input lifecycle
+        shell: pwsh
+        run: ./tools/Test-InlineTextInput.ps1
+      - name: Test native text input lifecycle with UWP event stubs
+        shell: pwsh
+        run: ./tools/Test-NativeTextInput.ps1
+      - name: Test player controls and drawer lifecycle
+        shell: pwsh
+        run: ./tools/Test-PlayerUi.ps1
+      - name: Test playback and focus navigation transitions
+        shell: pwsh
+        run: ./tools/Test-PlayerInput.ps1
+      - name: Test physical gamepad edges, repeat, and input ownership
+        shell: pwsh
+        run: ./tools/Test-GamepadInput.ps1
+      - name: Test mapped gamepad key classification and raw-owner sequences
+        shell: pwsh
+        run: ./tools/Test-GamepadRouting.ps1
+      - name: Test left stick deadzone and directional hysteresis
+        shell: pwsh
+        run: ./tools/Test-GamepadDirection.ps1
+      - name: Test recommendation refresh, paging, and account boundaries
+        shell: pwsh
+        run: ./tools/Test-Recommendations.ps1
+      - name: Test search navigation and stale feed responses
+        shell: pwsh
+        run: ./tools/Test-FeedNavigation.ps1
+      - name: Test feed replacement and first-result focus
+        shell: pwsh
+        run: ./tools/Test-HomeFeedFocus.ps1
+      - name: Test focus scale and wide-card expansion bounds
+        shell: pwsh
+        run: ./tools/Test-TvFocusGeometry.ps1
+      - name: Test user search results and pagination
+        shell: pwsh
+        run: ./tools/Test-UserSearch.ps1
+      - name: Test seek tooltip timestamps
+        shell: pwsh
+        run: ./tools/Test-MediaTime.ps1
+      - name: Test buffering watchdog and media clock recovery
+        shell: pwsh
+        run: ./tools/Test-PlaybackHealth.ps1
+      - name: Test related video search, explicit uploader mode, and website parsing
+        shell: pwsh
+        run: ./tools/Test-Search.ps1
+      - name: Test actual download byte metering
+        shell: pwsh
+        run: ./tools/Test-DownloadSpeed.ps1
+      - name: Test current comments and server cursors
+        shell: pwsh
+        run: ./tools/Test-Comments.ps1
+      - name: Test comment counts and partial result presentation
+        shell: pwsh
+        run: ./tools/Test-CommentPresentation.ps1
+      - name: Build unsigned x64 sideload package
+        shell: pwsh
+        run: msbuild BiliXbox.sln /restore /m /p:Configuration=Release /p:Platform=x64 /p:GenerateAppxPackageOnBuild=true /p:AppxPackageSigningEnabled=false /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxBundle=Never /p:AppxPackageDir="${{ github.workspace }}\artifacts\AppPackages\"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BiliXbox-unsigned-x64
+          path: artifacts/AppPackages/
+          if-no-files-found: error
