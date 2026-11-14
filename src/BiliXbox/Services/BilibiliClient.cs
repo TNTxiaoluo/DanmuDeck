@@ -50,6 +50,12 @@ namespace BiliXbox.Services
 
         public UserProfile CurrentUser { get; private set; }
         public bool IsLoggedIn => CurrentUser != null && !string.IsNullOrEmpty(_cookies.GetCookieValue("SESSDATA"));
+        public event Action<string> PlaybackDiagnostic;
+
+        private void PublishPlaybackDiagnostic(string text)
+        {
+            try { PlaybackDiagnostic?.Invoke(text); } catch (Exception) { /* Diagnostics never break playback. */ }
+        }
 
         public BilibiliClient()
         {
@@ -448,45 +454,88 @@ namespace BiliXbox.Services
         }
 
         public async Task<PlaybackInfo> GetPlaybackAsync(VideoDetail video, int quality,
-            CancellationToken ct = default(CancellationToken))
+            CancellationToken ct = default(CancellationToken), PlaybackAudioMode audioMode = PlaybackAudioMode.Standard)
         {
             if (video == null || video.Cid <= 0) throw new ArgumentException("视频信息不完整。", nameof(video));
             if (quality <= 0) throw new ArgumentOutOfRangeException(nameof(quality));
+            if (!Enum.IsDefined(typeof(PlaybackAudioMode), audioMode)) throw new ArgumentOutOfRangeException(nameof(audioMode));
             // Request the website's DASH catalogue rather than the HTML5 MP4
             // compatibility endpoint, which caps its catalogue at 720P. Send
             // the selected qn: a highest-tier request is not a substitute for
             // requesting 4K explicitly. Only returned tracks grant playback.
             // The official player uses fnval 2000 for HEVC with AV1 disabled;
-            // 4048 advertises AV1, which this client does not decode.
-            var root = await GetSignedJsonAsync("/x/player/wbi/playurl", new Dictionary<string, string>
+            // 4048 advertises AV1. Start with AVC/HEVC so a server preference
+            // cannot replace a working HEVC representation with AV1-only data.
+            long playbackEpoch = _loginSessionEpoch;
+            long playbackMid = CurrentUser?.Mid ?? 0;
+            string playbackSession = _cookies.GetCookieValue("SESSDATA");
+            PublishPlaybackDiagnostic("request endpoint=/x/player/wbi/playurl qn=" + quality + " fnval=2000 fourk=1"
+                + " auth=" + IsLoggedIn + " sessionCookie=" + !string.IsNullOrEmpty(playbackSession)
+                + " premium=" + (CurrentUser?.IsPremium == true));
+            var root = await GetPlaybackJsonAsync(new Dictionary<string, string>
             {
                 ["bvid"] = video.Bvid, ["cid"] = Invariant(video.Cid),
                 ["qn"] = Invariant(quality), ["fnval"] = "2000", ["fnver"] = "0", ["fourk"] = "1"
             }, ct);
             var data = RequireData(root);
+            if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
             var dash = data["dash"];
             var rawVideos = dash?["video"] as JArray ?? new JArray();
             var videos = rawVideos
-                .Where(DashManifestBuilder.IsSupportedVideo).Where(track => Number(track, "id") > 0).ToList();
+                .Where(track => PlaybackVideoRejectionReason(track).Length == 0).Where(track => Number(track, "id") > 0).ToList();
             var capabilities = await FilterPlaybackCapabilitiesAsync(data, videos, ct);
+            if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
+            PublishTrackCatalogue(data, capabilities, quality);
+            // Only probe AV1 when an explicit UHD request has no usable track
+            // and the platform has advertised that tier. Never advertise AV1
+            // on faith or repeatedly retry a denied playback request.
+            if ((quality == 120 || quality == 127) && !capabilities.Allowed.Any(track => EffectivePlaybackQuality(track) == quality
+                    && track.Annotation<SdrToneMappedPlaybackTrack>() == null)
+                && !capabilities.DisplayBlocked.Contains(quality)
+                && (rawVideos.Any(track => Number(track, "id") == quality)
+                    || (data["accept_quality"] as JArray ?? new JArray()).Any(value => value.ToString() == Invariant(quality)))
+                && await Task.Run(() => PlaybackCodecSupport.CanDecodeHardware("av01", quality == 127 ? 7680 : 3840,
+                    quality == 127 ? 4320 : 2160, 30, 20000000, 8), ct))
+            {
+                try
+                {
+                    PublishPlaybackDiagnostic("request endpoint=/x/player/wbi/playurl qn=" + quality + " fnval=4048 fourk=1 av1HardwareProbe=passed");
+                    var alternateData = RequireData(await GetPlaybackJsonAsync(new Dictionary<string, string>
+                    {
+                        ["bvid"] = video.Bvid, ["cid"] = Invariant(video.Cid), ["qn"] = Invariant(quality),
+                        ["fnval"] = "4048", ["fnver"] = "0", ["fourk"] = "1"
+                    }, ct));
+                    alternateData.AddAnnotation(new PlaybackRequestMetadata { Fnval = 4048 });
+                    if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
+                    var alternateRaw = alternateData["dash"]?["video"] as JArray ?? new JArray();
+                    var alternateCapabilities = await FilterPlaybackCapabilitiesAsync(alternateData,
+                        alternateRaw.Where(track => PlaybackVideoRejectionReason(track).Length == 0).Where(track => Number(track, "id") > 0).ToList(), ct);
+                    PublishTrackCatalogue(alternateData, alternateCapabilities, quality);
+                    if (alternateCapabilities.Allowed.Any(track => EffectivePlaybackQuality(track) == quality
+                            && track.Annotation<SdrToneMappedPlaybackTrack>() == null)
+                        && (alternateData["dash"]?["audio"] as JArray ?? new JArray()).Any(DashManifestBuilder.IsSupportedAudio))
+                    {
+                        data = alternateData; dash = data["dash"]; rawVideos = alternateRaw; capabilities = alternateCapabilities;
+                    }
+                }
+                catch (BilibiliApiException error)
+                { PublishPlaybackDiagnostic("av1-probe-failed apiCode=" + error.Code + " keepOriginalSource=true"); }
+            }
+            if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
             var hardwareHevc = capabilities.HardwareHevc;
             var fourKDisplay = capabilities.FourKDisplay;
             var hdr10Display = capabilities.Hdr10Display;
             var blockedQualities = capabilities.BlockedQualities;
             var unknownQualities = capabilities.UnknownQualities;
             videos = capabilities.Allowed;
-            var audio = (dash?["audio"] as JArray ?? new JArray()).Where(DashManifestBuilder.IsSupportedAudio)
-                .OrderByDescending(track => Number(track, "bandwidth")).FirstOrDefault();
+            var audioSelection = await SelectPlaybackAudioAsync(data, audioMode, ct);
+            if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
+            var audio = audioSelection.Selected;
             if (videos.Count > 0 && audio != null)
             {
-                var selected = videos.Where(track => Number(track, "id") <= quality)
-                    .OrderByDescending(track => Number(track, "id"))
-                    .ThenBy(track => hardwareHevc.Contains(track) && (IsTrueUhdVideo(track) || DashManifestBuilder.IsHdr10(track)) ? 0
-                        : Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
-                    .ThenByDescending(track => Number(track, "bandwidth")).FirstOrDefault()
-                    ?? videos.OrderBy(track => Number(track, "id")).First();
-                var actualQuality = (int)Number(selected, "id");
-                var provided = new HashSet<int>(videos.Select(track => (int)Number(track, "id")));
+                var selected = OrderPlaybackVideoTracks(videos, quality, hardwareHevc).First();
+                var actualQuality = EffectivePlaybackQuality(selected);
+                var provided = new HashSet<int>(videos.Select(EffectivePlaybackQuality));
                 // Anonymous DASH responses can stop at 480P, whereas the public
                 // MP4 compatibility endpoint can still return a genuine 720P
                 // muxed file. Preserve that working tier without calling it HD
@@ -502,6 +551,7 @@ namespace BiliXbox.Services
                             mp4.CapabilityDiagnostic = capabilities.Diagnostic;
                             mp4.Quality = mp4.AvailableQualities.First(item => item.Id == mp4.QualityId).Label;
                             SetPlaybackDiagnostics(mp4, data, quality);
+                            PublishSelectedPlayback(mp4);
                             return mp4;
                         }
                     }
@@ -513,20 +563,8 @@ namespace BiliXbox.Services
                 }
                 double duration;
                 if (!double.TryParse(Str(dash, "duration"), NumberStyles.Float, CultureInfo.InvariantCulture, out duration)) duration = 0;
-                var playback = CreateDashPlayback(data, selected, audio, duration, quality, provided, rawVideos,
-                    hardwareHevc.Contains(selected), fourKDisplay.Contains(selected), hdr10Display.Contains(selected), blockedQualities,
-                    unknownQualities, capabilities.Diagnostic);
-                if (IsHevc(selected))
-                {
-                    var compatibleTracks = videos.Where(track => Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
-                        && Number(track, "id") <= actualQuality).ToList();
-                    var fallback = compatibleTracks.Where(track => Number(track, "id") <= 80)
-                        .OrderByDescending(track => Number(track, "id")).ThenBy(track => Number(track, "bandwidth")).FirstOrDefault()
-                        ?? compatibleTracks.OrderByDescending(track => Number(track, "id")).ThenBy(track => Number(track, "bandwidth")).FirstOrDefault();
-                    if (fallback != null)
-                        playback.CodecFallback = CreateDashPlayback(data, fallback, audio, duration, quality, provided, rawVideos, false,
-                            fourKDisplay.Contains(fallback), hdr10Display.Contains(fallback), blockedQualities, unknownQualities, capabilities.Diagnostic);
-                }
+                var playback = CreateDashPlaybackChain(data, videos, audioSelection, duration, quality, rawVideos, capabilities);
+                PublishSelectedPlayback(playback);
                 return playback;
             }
             // Some older videos supply a real muxed MP4 even in this response.
@@ -534,7 +572,112 @@ namespace BiliXbox.Services
             var compatible = MapMp4Playback(data, blockedQualities, unknownQualities);
             compatible.CapabilityDiagnostic = capabilities.Diagnostic;
             SetPlaybackDiagnostics(compatible, data, quality);
+            PublishSelectedPlayback(compatible);
             return compatible;
+        }
+
+        private static string PlaybackVideoRejectionReason(JToken track)
+            => !ClearPlaybackAudio(track) ? "轨道需要当前播放器未实现的版权保护"
+                : DashManifestBuilder.VideoRejectionReason(track);
+
+        private static IEnumerable<JToken> OrderPlaybackVideoTracks(IEnumerable<JToken> tracks, int requestedQuality,
+            ISet<JToken> hardwareHevc)
+        {
+            var all = tracks.ToList();
+            var eligible = all.Where(track => EffectivePlaybackQuality(track) <= requestedQuality).ToList();
+            if (eligible.Count == 0)
+            {
+                int minimum = all.Min(EffectivePlaybackQuality);
+                eligible = all.Where(track => EffectivePlaybackQuality(track) == minimum).ToList();
+            }
+            return eligible.OrderByDescending(EffectivePlaybackQuality)
+                .ThenBy(track => DashFrameRate(track) > 60.001 ? 1 : 0)
+                .ThenBy(track => track.Annotation<SdrToneMappedPlaybackTrack>() != null ? 1 : 0)
+                .ThenBy(track => hardwareHevc.Contains(track) && (IsTrueUhdVideo(track) || DashManifestBuilder.IsHdr10(track)) ? 0
+                    : Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
+                .ThenBy(track => DashManifestBuilder.IsHdr10(track) == (requestedQuality == 125) ? 0 : 1)
+                .ThenByDescending(track => Number(track, "bandwidth"));
+        }
+
+        private sealed class SdrToneMappedPlaybackTrack
+        {
+            internal JToken Source;
+        }
+
+        private static int EffectivePlaybackQuality(JToken track)
+            => track.Annotation<SdrToneMappedPlaybackTrack>() != null ? 120 : (int)Number(track, "id");
+
+        private static JToken OriginalPlaybackTrack(JToken track)
+            => track.Annotation<SdrToneMappedPlaybackTrack>()?.Source ?? track;
+
+        private static bool IsBoundedFourKSource(JToken track)
+        {
+            long width = Number(track, "width"), height = Number(track, "height");
+            return IsTrueUhdVideo(track) && width > 0 && height > 0
+                && Math.Max(width, height) <= 4096 && Math.Min(width, height) <= 2160;
+        }
+
+        private static string PlaybackVideoSourceKey(JToken track)
+        {
+            Uri uri;
+            string url = DashManifestBuilder.Url(track);
+            string path = Uri.TryCreate(url, UriKind.Absolute, out uri) ? uri.AbsolutePath : url;
+            var segment = track["SegmentBase"] ?? track["segment_base"];
+            return path + "|" + Str(track, "codecs") + "|" + Number(track, "width") + "x" + Number(track, "height")
+                + "|" + Number(track, "bandwidth") + "|" + (Str(segment, "Initialization") + Str(segment, "initialization"))
+                + "|" + (Str(segment, "indexRange") + Str(segment, "index_range")) + "|" + DashManifestBuilder.IsHdr10(track);
+        }
+
+        private PlaybackInfo CreateDashPlaybackChain(JToken data, List<JToken> videos, PlaybackAudioSelection audio,
+            double duration, int requestedQuality, JArray rawVideos, PlaybackTrackCapabilities capabilities)
+        {
+            var ordered = OrderPlaybackVideoTracks(videos, requestedQuality, capabilities.HardwareHevc).ToList();
+            int actualQuality = EffectivePlaybackQuality(ordered[0]);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var sameTier = ordered.Where(track => EffectivePlaybackQuality(track) == actualQuality)
+                .Where(track => seen.Add(PlaybackVideoSourceKey(track))).ToList();
+            var candidates = sameTier.Take(12).ToList();
+            var lower = ordered.Where(track => EffectivePlaybackQuality(track) < actualQuality).ToList();
+            var compatible = lower.Where(track => Number(track, "id") <= 80
+                && Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(track => Number(track, "id")).ThenBy(track => Number(track, "bandwidth")).FirstOrDefault()
+                ?? lower.FirstOrDefault();
+            if (compatible != null && seen.Add(PlaybackVideoSourceKey(compatible))) candidates.Add(compatible);
+            PublishPlaybackDiagnostic("candidate-plan qn=" + requestedQuality + " sameTier=" + sameTier.Count
+                + " sameTierBudget=12 attempts=" + candidates.Count + " omittedByBudget=" + Math.Max(0, sameTier.Count - 12));
+            var provided = new HashSet<int>(videos.Select(EffectivePlaybackQuality));
+            PlaybackInfo next = null;
+            for (int index = candidates.Count - 1; index >= 0; --index)
+            {
+                var track = candidates[index];
+                var selectedAudio = index == 0 ? audio.Selected : audio.Standard ?? audio.Selected;
+                var candidate = CreateDashPlayback(data, track, selectedAudio, duration, requestedQuality, provided, rawVideos,
+                    capabilities.HardwareHevc.Contains(track), capabilities.FourKDisplay.Contains(track), capabilities.Hdr10Display.Contains(track),
+                    capabilities.BlockedQualities, capabilities.UnknownQualities, capabilities.Diagnostic);
+                candidate.CodecFallback = next;
+                if (index == 0 && candidate.AudioMode != PlaybackAudioMode.Standard && audio.Standard != null)
+                {
+                    candidate.AudioFallback = CreateDashPlayback(data, track, audio.Standard, duration, requestedQuality, provided,
+                        rawVideos, capabilities.HardwareHevc.Contains(track), capabilities.FourKDisplay.Contains(track),
+                        capabilities.Hdr10Display.Contains(track), capabilities.BlockedQualities, capabilities.UnknownQualities, capabilities.Diagnostic);
+                    candidate.AudioFallback.CodecFallback = next;
+                }
+                next = candidate;
+            }
+            return next;
+        }
+
+        private void PublishSelectedPlayback(PlaybackInfo playback)
+            => PublishPlaybackDiagnostic("selected qn=" + playback.QualityId + " trackIndex=" + playback.VideoTrackIndex
+                + " " + playback.VideoWidth + "x" + playback.VideoHeight + " codec=" + SafePlaybackCodec(playback.VideoCodec)
+                + " dynamicRange=" + (playback.IsHdr10 ? "HDR10" : "SDR") + " audio=" + playback.AudioMode
+                + " sourceQn=" + playback.SourceQualityId + " outputRange=" + (playback.IsHdr10 && !playback.UsesSdrToneMapping ? "HDR10" : "SDR")
+                + " nativeSdrToneMapping=" + playback.UsesSdrToneMapping);
+
+        private static string SafePlaybackCodec(string value)
+        {
+            string codec = Regex.Replace(value ?? "", "[^A-Za-z0-9._-]", "");
+            return codec.Length > 80 ? codec.Substring(0, 80) : codec;
         }
 
         private PlaybackInfo CreateDashPlayback(JToken data, JToken selected, JToken audio, double duration,
@@ -543,26 +686,204 @@ namespace BiliXbox.Services
             IDictionary<int, string> blockedQualities = null, IDictionary<int, string> unknownQualities = null,
             string capabilityDiagnostic = "")
         {
-            int actualQuality = (int)Number(selected, "id");
+            int actualQuality = EffectivePlaybackQuality(selected);
+            bool toneMapped = selected.Annotation<SdrToneMappedPlaybackTrack>() != null;
             var qualities = MapPlaybackQualities(data, actualQuality, provided, rawVideos, blockedQualities, unknownQualities);
+            if (toneMapped)
+            {
+                var outputOption = qualities.First(item => item.Id == 120);
+                outputOption.Label = "4K SDR（HDR源色调映射）";
+                outputOption.RequiresLogin = outputOption.RequiresPremium = true;
+            }
             var playback = new PlaybackInfo
             {
                 Url = DashManifestBuilder.Url(selected), DashManifest = DashManifestBuilder.Build(selected, audio, duration),
                 DashVideoUrls = DashManifestBuilder.Urls(selected), DashAudioUrls = DashManifestBuilder.Urls(audio),
-                ContentType = "application/dash+xml", QualityId = actualQuality,
+                ContentType = "application/dash+xml", QualityId = actualQuality, SourceQualityId = (int)Number(selected, "id"),
                 Quality = qualities.First(item => item.Id == actualQuality).Label,
                 AvailableQualities = qualities, RequiresHttpHeaders = true, VideoCodec = Str(selected, "codecs"),
+                VideoTrackIndex = rawVideos.IndexOf(OriginalPlaybackTrack(selected)),
                 VideoWidth = (int)Number(selected, "width"), VideoHeight = (int)Number(selected, "height"),
                 VideoBitrate = Number(selected, "bandwidth"), AudioBitrate = Number(audio, "bandwidth"),
+                AudioCodec = Str(audio, "codecs"), AudioChannels = AudioChannelCount(audio),
+                AudioSampleRate = AudioMetadataNumber(audio, 1, 1048575, "audioSamplingRate", "sample_rate", "sampleRate", "sampling_rate"),
+                AudioBitsPerSample = AudioMetadataNumber(audio, 1, 32, "bits_per_sample", "bitsPerSample", "bit_depth", "bitDepth", "bits_per_channel", "bitsPerChannel"),
+                AudioMode = DashManifestBuilder.IsFlacAudio(audio) ? PlaybackAudioMode.HiRes
+                    : DashManifestBuilder.IsDolbyAudio(audio) ? PlaybackAudioMode.Dolby : PlaybackAudioMode.Standard,
                 VideoFrameRate = DashFrameRate(selected), HardwareHevcVerified = hardwareHevc,
                 FourKDisplayVerified = fourKDisplayVerified,
                 Hdr10DisplayVerified = hdr10DisplayVerified,
                 IsHdr10 = DashManifestBuilder.IsHdr10(selected),
+                UsesSdrToneMapping = toneMapped,
                 VideoBitsPerChannel = VideoBitsPerChannel(selected), CapabilityDiagnostic = capabilityDiagnostic
             };
+            double probeRate;
+            bool requiresNativeValidation;
+            if (PlaybackFrameRatePolicy.TryGetProbeRate(playback.VideoFrameRate, out probeRate, out requiresNativeValidation))
+            {
+                playback.VideoFrameRateProbe = probeRate;
+                playback.RequiresNativeFrameRateValidation = requiresNativeValidation;
+                if (requiresNativeValidation) playback.FrameRateNotice = "接口声明 " + playback.VideoFrameRate.ToString("0.###", CultureInfo.InvariantCulture)
+                    + (playback.VideoFrameRate > PlaybackFrameRatePolicy.NearSixtyMetadataMaximum
+                        ? "fps；仅 60fps 基础能力已通过，正在准备兼容性试播，未确认此帧率的硬件支持。"
+                        : "fps，帧率待系统验证；将尝试 60Hz 输出。");
+            }
+            if (requiresNativeValidation && playback.VideoFrameRate > PlaybackFrameRatePolicy.NearSixtyMetadataMaximum)
+                qualities.First(item => item.Id == actualQuality).RequiresCompatibilityTrial = true;
             SetPlaybackDiagnostics(playback, data, requestedQuality);
             return playback;
         }
+
+        private sealed class PlaybackAudioSelection
+        {
+            internal PlaybackAudioMode Requested;
+            internal JToken Standard, Selected, Dolby, HiRes;
+            internal string DolbyReason = "", HiResReason = "", Diagnostic = "";
+            internal bool DolbyAvailable, HiResAvailable;
+        }
+
+        private async Task<PlaybackAudioSelection> SelectPlaybackAudioAsync(JToken data, PlaybackAudioMode requested, CancellationToken ct)
+        {
+            var selection = new PlaybackAudioSelection { Requested = requested };
+            var dash = data["dash"] as JObject;
+            var dolbyInfo = dash?["dolby"] as JObject;
+            var flacInfo = dash?["flac"] as JObject;
+            var standard = PlaybackAudioTracks(dash?["audio"]);
+            var dolby = PlaybackAudioTracks(dolbyInfo?["audio"]);
+            // display=true only advertises a service feature, not a source or
+            // account entitlement. Only a real, clear FLAC track grants Hi-Res.
+            var flac = PlaybackAudioTracks(flacInfo?["audio"]);
+            selection.Standard = standard.Where(ClearPlaybackAudio).Where(DashManifestBuilder.IsAacAudio)
+                .Where(DashManifestBuilder.IsSupportedAudio).OrderByDescending(track => Number(track, "bandwidth")).FirstOrDefault();
+            var tracks = dolby.Concat(standard).Where(ClearPlaybackAudio).Where(DashManifestBuilder.IsDolbyAudio)
+                .Where(DashManifestBuilder.IsSupportedAudio).OrderByDescending(track => Number(track, "bandwidth")).ToList();
+            var decisions = new List<string>();
+            var dolbyChoice = await SelectPremiumPlaybackAudioAsync(tracks, false, decisions, ct);
+            var flacTracks = flac.Where(ClearPlaybackAudio).Where(DashManifestBuilder.IsFlacAudio)
+                .Where(DashManifestBuilder.IsSupportedAudio).OrderByDescending(track => Number(track, "bandwidth")).ToList();
+            var hiResChoice = await SelectPremiumPlaybackAudioAsync(flacTracks, true, decisions, ct);
+            selection.Dolby = dolbyChoice.Track; selection.DolbyReason = dolbyChoice.Reason;
+            selection.HiRes = hiResChoice.Track; selection.HiResReason = hiResChoice.Reason;
+            selection.DolbyAvailable = selection.Dolby != null;
+            selection.HiResAvailable = selection.HiRes != null;
+            selection.Selected = requested == PlaybackAudioMode.Dolby && selection.DolbyAvailable ? selection.Dolby
+                : requested == PlaybackAudioMode.HiRes && selection.HiResAvailable ? selection.HiRes : selection.Standard;
+            var log = new System.Text.StringBuilder("audio requested=" + requested + " dolbyType=" + Number(dolbyInfo, "type")
+                + " auth=" + IsLoggedIn + " premium=" + (CurrentUser?.IsPremium == true)
+                + " dolbyAvailable=" + selection.DolbyAvailable + " dolbyReason=" + selection.DolbyReason
+                + " hiResAvailable=" + selection.HiResAvailable + " hiResReason=" + selection.HiResReason
+                + " flacDisplay=" + Flag(flacInfo, "display") + " query=" + string.Join(",", decisions));
+            foreach (var track in standard.Concat(dolby).Concat(flac).Take(32))
+            {
+                string codec = Regex.Replace(Str(track, "codecs"), "[^A-Za-z0-9._-]", "");
+                if (codec.Length > 80) codec = codec.Substring(0, 80);
+                string decision = !ClearPlaybackAudio(track) ? "excluded: encrypted audio"
+                    : !DashManifestBuilder.IsSupportedAudio(track) ? "excluded: unsupported codec or invalid segments"
+                    : DashManifestBuilder.IsDolbyAudio(track) && !selection.DolbyAvailable ? "excluded: " + selection.DolbyReason
+                    : DashManifestBuilder.IsFlacAudio(track) && !selection.HiResAvailable ? "excluded: " + selection.HiResReason : "eligible";
+                log.Append("\naudio codec=").Append(codec).Append(" bps=").Append(Number(track, "bandwidth"))
+                    .Append(" channels=").Append(AudioChannelCount(track))
+                    .Append(" sampleRate=").Append(AudioMetadataNumber(track, 1, 1048575, "audioSamplingRate", "sample_rate", "sampleRate", "sampling_rate"))
+                    .Append(" bitsPerSample=").Append(AudioMetadataNumber(track, 1, 32, "bits_per_sample", "bitsPerSample", "bit_depth", "bitDepth", "bits_per_channel", "bitsPerChannel"))
+                    .Append(" decision=").Append(decision);
+            }
+            selection.Diagnostic = log.ToString();
+            data.AddAnnotation(selection);
+            PublishPlaybackDiagnostic(selection.Diagnostic);
+            return selection;
+        }
+
+        private static List<JToken> PlaybackAudioTracks(JToken value)
+            => value is JObject ? new List<JToken> { value }
+                : (value as JArray ?? new JArray()).OfType<JObject>().Cast<JToken>().ToList();
+
+        private sealed class PremiumPlaybackAudioChoice
+        {
+            internal JToken Track;
+            internal string Reason = "";
+        }
+
+        private async Task<PremiumPlaybackAudioChoice> SelectPremiumPlaybackAudioAsync(List<JToken> tracks,
+            bool hiRes, List<string> decisions, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            var result = new PremiumPlaybackAudioChoice();
+            string name = hiRes ? "Hi-Res 无损" : "杜比";
+            result.Reason = !IsLoggedIn ? "需要登录" : CurrentUser?.IsPremium != true ? "需要大会员"
+                : tracks.Count == 0 ? "B站本次未返回可用的" + name + "音轨" : "";
+            if (result.Reason.Length > 0) return result;
+            var probes = new Dictionary<string, PlaybackCodecSupport.Support>(StringComparer.OrdinalIgnoreCase);
+            bool unknown = false;
+            foreach (var track in tracks)
+            {
+                ct.ThrowIfCancellationRequested();
+                string codec = Str(track, "codecs");
+                PlaybackCodecSupport.Support support;
+                if (!probes.TryGetValue(codec, out support))
+                {
+                    support = hiRes ? await PlaybackCodecSupport.CheckFlacDecoderAsync(codec, ct)
+                        : await PlaybackCodecSupport.CheckDolbyDecoderAsync(codec, ct);
+                    probes[codec] = support;
+                }
+                decisions.Add(SafePlaybackCodec(codec) + " decoder=" + support);
+                if (support == PlaybackCodecSupport.Support.Supported) { result.Track = track; return result; }
+                unknown |= support == PlaybackCodecSupport.Support.Unknown;
+            }
+            result.Reason = unknown ? "设备" + name + "解码能力尚未确认" : "当前设备未提供此" + name + "格式的解码器";
+            return result;
+        }
+
+        private static bool ClearPlaybackAudio(JToken track) => !Flag(track, "is_drm") && Number(track, "drm_tech_type") == 0
+            && Str(track, "widevine_pssh").Length == 0 && Str(track, "playready_pssh").Length == 0;
+
+        private static int AudioChannelCount(JToken track)
+        {
+            foreach (var field in new[] { "channels", "channel_count", "channelCount" })
+            {
+                long value = Number(track, field);
+                if (value > 0 && value <= 32) return (int)value;
+            }
+            return 0;
+        }
+
+        private static int AudioMetadataNumber(JToken track, int minimum, int maximum, params string[] fields)
+        {
+            foreach (string field in fields)
+            {
+                long value = Number(track, field);
+                if (value >= minimum && value <= maximum) return (int)value;
+            }
+            return 0;
+        }
+
+        private void SetPlaybackAudioMetadata(PlaybackInfo playback, JToken data)
+        {
+            var selection = data.Annotation<PlaybackAudioSelection>();
+            playback.RequestedAudioMode = selection?.Requested ?? PlaybackAudioMode.Standard;
+            playback.AudioCapabilityDiagnostic = selection?.Diagnostic ?? "此兼容播放源未提供可选择的杜比或 Hi-Res 音轨";
+            string dolbyReason = selection?.DolbyReason ?? (!IsLoggedIn ? "需要登录"
+                : CurrentUser?.IsPremium != true ? "需要大会员" : "此兼容播放源未提供杜比音轨");
+            bool dolbyAvailable = selection?.DolbyAvailable == true && playback.DashManifest.Length > 0;
+            if (selection?.DolbyAvailable == true && !dolbyAvailable) dolbyReason = "此兼容播放源未提供可切换的杜比音轨";
+            string hiResReason = selection?.HiResReason ?? (!IsLoggedIn ? "需要登录"
+                : CurrentUser?.IsPremium != true ? "需要大会员" : "此兼容播放源未提供 Hi-Res 无损音轨");
+            bool hiResAvailable = selection?.HiResAvailable == true && playback.DashManifest.Length > 0;
+            if (selection?.HiResAvailable == true && !hiResAvailable) hiResReason = "此兼容播放源未提供可切换的 Hi-Res 无损音轨";
+            playback.AvailableAudioModes = new[]
+            {
+                new PlaybackAudioOption { Mode = PlaybackAudioMode.Standard, Label = "标准音频", IsAvailable = selection?.Standard != null || playback.AudioMode == PlaybackAudioMode.Standard,
+                    Reason = selection?.Standard == null && playback.AudioMode != PlaybackAudioMode.Standard ? "本次未返回标准音轨" : "" },
+                new PlaybackAudioOption { Mode = PlaybackAudioMode.Dolby, Label = "杜比音效", IsAvailable = dolbyAvailable,
+                    RequiresLogin = true, RequiresPremium = true, Reason = dolbyReason },
+                new PlaybackAudioOption { Mode = PlaybackAudioMode.HiRes, Label = "Hi-Res 无损", IsAvailable = hiResAvailable,
+                    RequiresLogin = true, RequiresPremium = true, Reason = hiResReason }
+            };
+            if (playback.RequestedAudioMode == PlaybackAudioMode.Dolby && playback.AudioMode != PlaybackAudioMode.Dolby)
+                playback.AudioNotice = "未启用杜比音轨：" + (dolbyReason.Length == 0 ? "此播放源使用标准音轨" : dolbyReason) + "；当前使用标准音频。";
+            else if (playback.RequestedAudioMode == PlaybackAudioMode.HiRes && playback.AudioMode != PlaybackAudioMode.HiRes)
+                playback.AudioNotice = "未启用 Hi-Res 无损音轨：" + (hiResReason.Length == 0 ? "此播放源使用标准音轨" : hiResReason) + "；当前使用标准音频。";
+        }
+
 
         private sealed class PlaybackTrackCapabilities
         {
@@ -573,6 +894,84 @@ namespace BiliXbox.Services
             internal readonly Dictionary<int, string> BlockedQualities = new Dictionary<int, string>();
             internal readonly Dictionary<int, string> UnknownQualities = new Dictionary<int, string>();
             internal string Diagnostic;
+            internal readonly Dictionary<JToken, string> RejectedTracks = new Dictionary<JToken, string>();
+            internal readonly Dictionary<JToken, string> TrackProbes = new Dictionary<JToken, string>();
+            internal readonly Dictionary<JToken, string[]> TrackChecks = new Dictionary<JToken, string[]>();
+            internal readonly HashSet<int> DeviceBlocked = new HashSet<int>();
+            internal readonly HashSet<int> DisplayBlocked = new HashSet<int>();
+        }
+
+        private sealed class PlaybackRequestMetadata { internal int Fnval = 2000; }
+
+        private async Task<JObject> GetPlaybackJsonAsync(Dictionary<string, string> parameters, CancellationToken ct)
+        {
+            try
+            {
+                var response = await GetSignedJsonAsync("/x/player/wbi/playurl", parameters, ct);
+                if (ResponseCode(response) != 0) PublishPlaybackDiagnostic("api-response-failed qn=" + parameters["qn"]
+                    + " fnval=" + parameters["fnval"] + " apiCode=" + ResponseCode(response));
+                return response;
+            }
+            catch (BilibiliApiException error)
+            {
+                PublishPlaybackDiagnostic("api-request-failed qn=" + parameters["qn"] + " fnval=" + parameters["fnval"] + " apiCode=" + error.Code);
+                throw;
+            }
+        }
+
+        private void PublishTrackCatalogue(JToken data, PlaybackTrackCapabilities capabilities, int quality)
+        {
+            var report = new System.Text.StringBuilder("catalog qn=" + quality + " fnval=" + (data.Annotation<PlaybackRequestMetadata>()?.Fnval ?? 2000)
+                + " fourk=1 auth=" + IsLoggedIn + " sessionCookie=" + !string.IsNullOrEmpty(_cookies.GetCookieValue("SESSDATA"))
+                + " premium=" + (CurrentUser?.IsPremium == true) + " serverQuality=" + Number(data, "quality")
+                + "\naccept_quality=" + string.Join(",", (data["accept_quality"] as JArray ?? new JArray()).Select(value => NumberValue(value))));
+            foreach (var format in (data["support_formats"] as JArray ?? new JArray()).Take(32))
+                report.Append("\nformat qn=").Append(Number(format, "quality")).Append(" need_login=").Append(Flag(format, "need_login"))
+                    .Append(" need_vip=").Append(Flag(format, "need_vip")).Append(" reason=").Append(Number(format, "can_watch_qn_reason"));
+            AppendPlaybackTrackDiagnostic(report, data, capabilities);
+            PublishPlaybackDiagnostic(report.ToString());
+        }
+
+        private static long NumberValue(JToken value)
+        { long number; return long.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out number) ? number : 0; }
+
+        private static void AppendPlaybackTrackDiagnostic(System.Text.StringBuilder report, JToken data, PlaybackTrackCapabilities capabilities)
+        {
+            var raw = data["dash"]?["video"] as JArray ?? new JArray();
+            report.Append("\ntrackCount=").Append(raw.Count);
+            for (int index = 0; index < raw.Count; ++index)
+            {
+                var track = raw[index];
+                string reason;
+                if (capabilities == null || !capabilities.RejectedTracks.TryGetValue(track, out reason))
+                    reason = PlaybackVideoRejectionReason(track);
+                if (Number(track, "id") <= 0) reason = "无有效画质编号";
+                var checks = new[] { "not_requested", "not_requested", "not_requested" };
+                string[] recorded;
+                if (capabilities != null && capabilities.TrackChecks.TryGetValue(track, out recorded)) checks = recorded;
+                bool toneMappedOutput = capabilities != null && capabilities.Allowed.Any(candidate =>
+                    candidate.Annotation<SdrToneMappedPlaybackTrack>() != null && ReferenceEquals(OriginalPlaybackTrack(candidate), track));
+                report.Append("\ntrack index=").Append(index).Append(" qn=").Append(Number(track, "id"))
+                    .Append(" ").Append(Number(track, "width")).Append("x").Append(Number(track, "height"))
+                    .Append(" codec=").Append(SafePlaybackCodec(Str(track, "codecs")))
+                    .Append(" dynamicRange=").Append(DashManifestBuilder.IsHdr10(track) ? "HDR10"
+                        : DashManifestBuilder.VideoRejectionReason(track).Contains("HDR") ? "unsupportedHdr" : "SDR")
+                    .Append(" fps=").Append(DashFrameRate(track).ToString("0.###", CultureInfo.InvariantCulture))
+                    .Append(" frameRateRaw=").Append(SafePlaybackFrameRateMetadata(Str(track, "frameRate")))
+                    .Append(" frame_rateRaw=").Append(SafePlaybackFrameRateMetadata(Str(track, "frame_rate")))
+                    .Append(" fpsField=").Append(Str(track, "frameRate").Length > 0 ? "frameRate"
+                        : Str(track, "frame_rate").Length > 0 ? "frame_rate" : "missing")
+                    .Append(" aliasConflict=").Append(Str(track, "frameRate").Length > 0 && Str(track, "frame_rate").Length > 0
+                        && !string.Equals(Str(track, "frameRate"), Str(track, "frame_rate"), StringComparison.Ordinal) ? "true" : "false")
+                    .Append(" bps=").Append(Number(track, "bandwidth")).Append(" bpc=").Append(VideoBitsPerChannel(track))
+                    .Append(" decision=").Append(toneMappedOutput ? "SDR-tone-map-eligible; HDR-output-excluded: " + reason
+                        : string.IsNullOrEmpty(reason) ? "eligible" : "excluded: " + reason)
+                    .Append(" decode=").Append(checks[0]).Append(" sdrDisplay=").Append(checks[1]).Append(" hdrDisplay=").Append(checks[2]);
+                string probes;
+                if (capabilities != null && capabilities.TrackProbes.TryGetValue(track, out probes) && probes.Length > 0)
+                    report.Append("\nprobe index=").Append(index).Append(" ").Append(probes);
+            }
+            report.Append("\n").Append(capabilities?.Diagnostic ?? "");
         }
 
         private static Task<PlaybackTrackCapabilities> FilterPlaybackCapabilitiesAsync(JToken data,
@@ -589,33 +988,63 @@ namespace BiliXbox.Services
             {
                 var result = new PlaybackTrackCapabilities();
                 var log = new PlaybackCodecSupport.ProbeLog();
+                var queried = new HashSet<JToken>();
+                var deviceRejected = new HashSet<JToken>();
+                var sdrDisplayRejected = new HashSet<JToken>();
+                var unknownTracks = new HashSet<JToken>();
+                foreach (var raw in data["dash"]?["video"] as JArray ?? new JArray())
+                {
+                    string reason = PlaybackVideoRejectionReason(raw);
+                    if (Number(raw, "id") <= 0) reason = "无有效画质编号";
+                    if (reason.Length > 0) result.RejectedTracks[raw] = reason;
+                    else if (!videos.Contains(raw)) result.RejectedTracks[raw] = "轨道未通过当前播放场景预筛选";
+                }
                 foreach (var track in videos)
                 {
                     ct.ThrowIfCancellationRequested();
+                    var trackLog = new PlaybackCodecSupport.ProbeLog();
+                    var checks = new[] { "not_requested", "not_requested", "not_requested" };
+                    result.TrackChecks[track] = checks;
+                    try
+                    {
                     int id = (int)Number(track, "id");
                     bool uhd = IsTrueUhdVideo(track), hdr = DashManifestBuilder.IsHdr10(track);
                     bool highTier = id == 120 || id == 127;
-                    if (highTier && (!uhd || Math.Max(Number(track, "width"), Number(track, "height"))
-                        < (id == 127 ? 7680 : 3840)))
+                    if (highTier && !HasUhdDimensions(track, id == 127 ? 7680 : 3840, id == 127 ? 4320 : 2160))
                     {
                         result.BlockedQualities[id] = "此档播放源未提供可验证的超高清分辨率";
+                        result.RejectedTracks[track] = result.BlockedQualities[id];
                         continue;
                     }
                     bool hevc = IsHevc(track);
+                    bool av1 = Str(track, "codecs").StartsWith("av01.", StringComparison.OrdinalIgnoreCase);
                     int width = (int)Number(track, "width"), height = (int)Number(track, "height");
                     int bits = VideoBitsPerChannel(track);
                     double rate = DashFrameRate(track);
                     string codec = Str(track, "codecs");
                     long bitrate = Number(track, "bandwidth");
+                    if (hdr && bits != 10)
+                    {
+                        result.RejectedTracks[track] = "HDR10轨道未提供符合要求的10位视频参数，未发起硬件能力查询";
+                        result.BlockedQualities[id] = result.RejectedTracks[track];
+                        trackLog.Add("HDR10位深参数无效", "validation=hdr-bit-depth; bpc=" + bits + "; query=not-issued");
+                        continue;
+                    }
+                    queried.Add(track);
                     // Xbox's published AVC decoder ceiling is 1080P60. A
                     // generic protection query must not authorize software AVC
                     // 4K in place of a supported HEVC ultra-HD representation.
-                    if (outputModes.IsXbox && !hevc && (width > 1920 || height > 1080))
-                    { result.BlockedQualities[id] = "Xbox 的 H.264 播放上限为 1080P，需要 HEVC 超高清播放源"; continue; }
-                    if (!uhd && !hdr && !hevc) { result.Allowed.Add(track); continue; }
+                    if (outputModes.IsXbox && Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
+                        && (Math.Max(width, height) > 1920 || Math.Min(width, height) > 1080))
+                    {
+                        result.BlockedQualities[id] = "Xbox 的 H.264 播放上限为 1080P，需要可硬件解码的超高清播放源";
+                        result.RejectedTracks[track] = result.BlockedQualities[id]; deviceRejected.Add(track); continue;
+                    }
+                    if (!uhd && !hdr && !hevc && !av1) { result.Allowed.Add(track); continue; }
                     var decode = PlaybackCodecSupport.CheckDecode(codec, width, height,
-                        rate > 0 ? rate : 60, bitrate, bits, log);
-                    if (decode != PlaybackCodecSupport.Support.Supported && !uhd && !hdr && !outputModes.IsXbox)
+                        rate > 0 ? rate : 60, bitrate, bits, trackLog);
+                    checks[0] = decode.ToString();
+                    if (decode != PlaybackCodecSupport.Support.Supported && hevc && !uhd && !hdr && !outputModes.IsXbox)
                     {
                         // Desktop can use its installed software HEVC decoder
                         // for ordinary SDR; it still receives an AVC fallback.
@@ -624,34 +1053,86 @@ namespace BiliXbox.Services
                     }
                     var display = !uhd || hdr ? PlaybackCodecSupport.Support.Supported
                         : PlaybackCodecSupport.CheckDisplay(codec, width, height,
-                            rate > 0 ? rate : 60, bitrate, bits, false, outputModes, log);
+                            rate > 0 ? rate : 60, bitrate, bits, false, outputModes, trackLog);
                     var displayHdr = !hdr ? PlaybackCodecSupport.Support.Supported
                         : bits != 10 ? PlaybackCodecSupport.Support.Unsupported
                         : PlaybackCodecSupport.CheckDisplay(codec, width, height,
-                            rate > 0 ? rate : 60, bitrate, bits, true, outputModes, log);
+                            rate > 0 ? rate : 60, bitrate, bits, true, outputModes, trackLog);
+                    checks[1] = !uhd || hdr ? "not_requested" : display.ToString();
+                    checks[2] = !hdr ? "not_requested" : displayHdr.ToString();
+                    if (hdr && (id == 120 || id == 125) && IsBoundedFourKSource(track) && bits == 10
+                        && decode == PlaybackCodecSupport.Support.Supported && displayHdr != PlaybackCodecSupport.Support.Supported)
+                    {
+                        // Microsoft documents native HDR10-to-SDR tone mapping.
+                        // Keep the original HDR representation and PQ metadata;
+                        // a separate output variant independently proves real
+                        // 4K decoding and a usable 4K SDR display mode.
+                        var sdr = PlaybackCodecSupport.CheckDisplay(codec, width, height,
+                            rate > 0 ? rate : 60, bitrate, bits, false, outputModes, trackLog);
+                        checks[1] = sdr.ToString();
+                        if (sdr == PlaybackCodecSupport.Support.Supported)
+                        {
+                            var variant = track.DeepClone();
+                            variant.AddAnnotation(new SdrToneMappedPlaybackTrack { Source = track });
+                            result.Allowed.Add(variant);
+                            if (hevc) result.HardwareHevc.Add(variant);
+                            result.FourKDisplay.Add(variant);
+                            trackLog.Add("HDR10→SDR 输出变体=Supported",
+                                "output-variant sourceQn=" + id + " effectiveQn=120 source=HDR10 output=SDR toneMapping=native decode=Supported sdrDisplay=Supported");
+                        }
+                    }
                     if (decode != PlaybackCodecSupport.Support.Supported || display != PlaybackCodecSupport.Support.Supported
                         || displayHdr != PlaybackCodecSupport.Support.Supported)
                     {
                         bool unsupported = decode == PlaybackCodecSupport.Support.Unsupported
                             || display == PlaybackCodecSupport.Support.Unsupported || displayHdr == PlaybackCodecSupport.Support.Unsupported;
                         if (!unsupported) result.UnknownQualities[id] = "设备能力查询尚未确认，可重新打开播放设置重试";
-                        else result.BlockedQualities[id] = decode == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档硬件解码能力"
+                        else result.BlockedQualities[id] = decode == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档编码的硬件解码能力"
                             : display == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档 4K 显示能力" : "当前设备不支持此档 HDR10 显示能力";
+                        result.RejectedTracks[track] = unsupported ? result.BlockedQualities[id] : result.UnknownQualities[id];
+                        bool invalidMetadata = trackLog.Details.Contains("validation=");
+                        if (invalidMetadata) result.RejectedTracks[track] = "轨道元数据或媒体参数无效，未向系统发起对应能力查询";
+                        if (unsupported && !invalidMetadata) deviceRejected.Add(track);
+                        if (!unsupported) unknownTracks.Add(track);
+                        if (decode == PlaybackCodecSupport.Support.Supported
+                            && !hdr && display == PlaybackCodecSupport.Support.Unsupported)
+                            sdrDisplayRejected.Add(track);
                         continue;
                     }
                     result.Allowed.Add(track);
                     if (hevc) result.HardwareHevc.Add(track);
                     if (uhd) result.FourKDisplay.Add(track);
                     if (hdr) result.Hdr10Display.Add(track);
+                    }
+                    finally
+                    {
+                        result.TrackProbes[track] = trackLog.Details;
+                        log.Merge(trackLog);
+                    }
                 }
                 // A blocked codec must not hide another returned, usable codec
                 // for the same tier. Absence of a track, however, is not a reason
                 // to skip device checks on advertised 4K/HDR menu entries.
                 foreach (var id in result.BlockedQualities.Keys.ToList())
-                    if (result.Allowed.Any(track => Number(track, "id") == id) || result.UnknownQualities.ContainsKey(id))
+                    if (result.Allowed.Any(track => EffectivePlaybackQuality(track) == id) || result.UnknownQualities.ContainsKey(id))
                         result.BlockedQualities.Remove(id);
                 foreach (var id in result.UnknownQualities.Keys.ToList())
-                    if (result.Allowed.Any(track => Number(track, "id") == id)) result.UnknownQualities.Remove(id);
+                    if (result.Allowed.Any(track => EffectivePlaybackQuality(track) == id)) result.UnknownQualities.Remove(id);
+                foreach (var group in videos.GroupBy(track => (int)Number(track, "id")))
+                {
+                    int id = group.Key;
+                    if (result.Allowed.Any(track => EffectivePlaybackQuality(track) == id)) continue;
+                    var candidates = group.Where(queried.Contains).ToList();
+                    if (unknownTracks.Any(track => Number(track, "id") == id))
+                    { result.BlockedQualities.Remove(id); continue; }
+                    if (candidates.Count > 0 && candidates.All(deviceRejected.Contains)) result.DeviceBlocked.Add(id);
+                    // An HDR10 display rejection is no proof that the same
+                    // quality cannot be delivered as SDR by another codec.
+                    var sdrCandidates = candidates.Where(track => !DashManifestBuilder.IsHdr10(track)).ToList();
+                    if (sdrCandidates.Count > 0 && sdrCandidates.All(sdrDisplayRejected.Contains)) result.DisplayBlocked.Add(id);
+                    var reasons = group.Where(result.RejectedTracks.ContainsKey).Select(track => result.RejectedTracks[track]).Distinct().Take(3);
+                    result.BlockedQualities[id] = string.Join("；", reasons);
+                }
                 foreach (var token in data["accept_quality"] as JArray ?? new JArray())
                 {
                     ct.ThrowIfCancellationRequested();
@@ -659,7 +1140,7 @@ namespace BiliXbox.Services
                     if (!int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out id)
                         || result.BlockedQualities.ContainsKey(id)
                         || result.UnknownQualities.ContainsKey(id)
-                        || result.Allowed.Any(track => Number(track, "id") == id)) continue;
+                        || result.Allowed.Any(track => EffectivePlaybackQuality(track) == id)) continue;
                     var returned = data["dash"]?["video"] as JArray;
                     if (returned != null && returned.Any(track => Number(track, "id") == id)
                         && !videos.Any(track => Number(track, "id") == id))
@@ -674,6 +1155,13 @@ namespace BiliXbox.Services
                     {
                         int width = id == 127 ? 7680 : 3840, height = id == 127 ? 4320 : 2160;
                         var support = PlaybackCodecSupport.CheckDisplay("hvc1", width, height, 30, 20000000, 10, false, outputModes, log);
+                        if (support != PlaybackCodecSupport.Support.Supported)
+                        {
+                            var av1 = PlaybackCodecSupport.CheckDisplay("av01", width, height, 30, 20000000, 8, false, outputModes, log);
+                            support = av1 == PlaybackCodecSupport.Support.Supported ? av1
+                                : support == PlaybackCodecSupport.Support.Unknown || av1 == PlaybackCodecSupport.Support.Unknown
+                                    ? PlaybackCodecSupport.Support.Unknown : PlaybackCodecSupport.Support.Unsupported;
+                        }
                         if (!outputModes.IsXbox && support != PlaybackCodecSupport.Support.Supported)
                         {
                             var avc = PlaybackCodecSupport.CheckDisplay("avc1", width, height, 30, 20000000, 8, false, outputModes, log);
@@ -693,6 +1181,7 @@ namespace BiliXbox.Services
                 }
                 ct.ThrowIfCancellationRequested();
                 result.Diagnostic = outputModes.Diagnostic + "；" + log;
+                data.AddAnnotation(result);
                 return result;
             }, ct);
         }
@@ -712,7 +1201,16 @@ namespace BiliXbox.Services
 
         private static bool IsTrueUhdVideo(JToken track)
         {
-            return Math.Max(Number(track, "width"), Number(track, "height")) >= 3000;
+            return HasUhdDimensions(track, 3840, 2160);
+        }
+
+        private static bool HasUhdDimensions(JToken track, int longEdge, int shortEdge)
+        {
+            long width = Number(track, "width"), height = Number(track, "height");
+            // 2880x2160 (4:3), cropped cinema and portrait streams are real
+            // platform UHD tiers too. Neither the title nor qn alone is proof.
+            return width > 0 && height > 0 && (Math.Max(width, height) >= longEdge
+                || Math.Min(width, height) >= shortEdge);
         }
 
         private static int VideoBitsPerChannel(JToken track)
@@ -723,7 +1221,13 @@ namespace BiliXbox.Services
                 if (int.TryParse(Str(track, name), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
                     && value >= 8 && value <= 16) return value;
             }
-            return Str(track, "codecs").StartsWith("hvc1.2", StringComparison.OrdinalIgnoreCase)
+            var codec = Str(track, "codecs");
+            var av1 = codec.Split('.');
+            int av1Depth;
+            if (codec.StartsWith("av01.", StringComparison.OrdinalIgnoreCase) && av1.Length >= 4
+                && int.TryParse(av1[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out av1Depth)
+                && (av1Depth == 8 || av1Depth == 10 || av1Depth == 12)) return av1Depth;
+            return codec.StartsWith("hvc1.2", StringComparison.OrdinalIgnoreCase)
                 || Str(track, "codecs").StartsWith("hev1.2", StringComparison.OrdinalIgnoreCase) ? 10 : 8;
         }
 
@@ -739,6 +1243,17 @@ namespace BiliXbox.Services
                 numerator <= 0 || denominator <= 0 || double.IsInfinity(numerator) || double.IsNaN(numerator)) return 0;
             double rate = numerator / denominator;
             return !double.IsInfinity(rate) && !double.IsNaN(rate) ? rate : 0;
+        }
+
+        private static string SafePlaybackFrameRateMetadata(string value)
+        {
+            if (value.Length == 0) return "<missing>";
+            // Do not echo arbitrary server strings, URLs, tokens or newlines
+            // into a diagnostic report. Retain bounded numeric/rational syntax
+            // only; parser priority and the original response stay unchanged.
+            return value.Length <= 64 && Regex.IsMatch(value,
+                @"\A[+]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?(?:/[+]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)?\z")
+                ? value : "<invalid>";
         }
 
         private async Task<PlaybackInfo> GetMp4PlaybackAsync(VideoDetail video, int quality, CancellationToken ct,
@@ -787,7 +1302,7 @@ namespace BiliXbox.Services
             // actual response, and never relabel the returned source as requested.
             return new PlaybackInfo
             {
-                Url = url, BackupUrls = backups, Quality = actual.Label, QualityId = qualityNumber,
+                Url = url, BackupUrls = backups, Quality = actual.Label, QualityId = qualityNumber, SourceQualityId = qualityNumber,
                 AvailableQualities = qualities, RequiresHttpHeaders = true
             };
         }
@@ -796,7 +1311,11 @@ namespace BiliXbox.Services
             ISet<int> dashQualities = null, JArray rawVideos = null,
             IDictionary<int, string> blockedQualities = null, IDictionary<int, string> unknownQualities = null)
         {
-            var accepted = data["accept_quality"] as JArray ?? new JArray();
+            var accepted = new JArray(data["accept_quality"] as JArray ?? new JArray());
+            // The returned representations are stronger evidence than an
+            // incomplete advertised menu. Keep every real returned tier.
+            foreach (var id in dashQualities ?? new HashSet<int>())
+                if (!accepted.Any(value => value.ToString() == Invariant(id))) accepted.Add(id);
             var descriptions = data["accept_description"] as JArray ?? new JArray();
             var formats = data["support_formats"] as JArray ?? new JArray();
             var result = new List<PlaybackQuality>();
@@ -809,10 +1328,15 @@ namespace BiliXbox.Services
                 var label = Str(support, "new_description");
                 if (string.IsNullOrWhiteSpace(label) && i < descriptions.Count) label = descriptions[i].ToString();
                 if (string.IsNullOrWhiteSpace(label)) label = Str(support, "display_desc");
-                if (string.IsNullOrWhiteSpace(label)) label = "画质 " + Invariant(id);
+                if (string.IsNullOrWhiteSpace(label)) label = id == 120 ? "4K 超高清" : id == 127 ? "8K 超高清" : "画质 " + Invariant(id);
                 var provided = (dashQualities != null && dashQualities.Contains(id)) || id == actualQuality;
+                var outputTracks = data.Annotation<PlaybackTrackCapabilities>()?.Allowed
+                    .Where(track => EffectivePlaybackQuality(track) == id).ToList() ?? new List<JToken>();
+                bool toneMappedOnly = id == 120 && outputTracks.Count > 0
+                    && outputTracks.All(track => track.Annotation<SdrToneMappedPlaybackTrack>() != null);
+                if (toneMappedOnly) label = "4K SDR（HDR源色调映射）";
                 var needsLogin = Flag(support, "need_login") || (!provided && !IsLoggedIn && id >= 80);
-                var needsPremium = Flag(support, "need_vip");
+                var needsPremium = Flag(support, "need_vip") || toneMappedOnly;
                 var format = Str(support, "format");
                 // Historical values such as flv/hdflv2 describe the quality
                 // tier even when real DASH tracks use video/mp4. They are not
@@ -841,6 +1365,9 @@ namespace BiliXbox.Services
                     IsVisible = !blocked,
                     IsCapabilityPending = unknown,
                     HasPlaybackSource = provided,
+                    RequiresCompatibilityTrial = outputTracks.Count > 0 && outputTracks.All(track =>
+                        DashFrameRate(track) > PlaybackFrameRatePolicy.NearSixtyMetadataMaximum
+                            && DashFrameRate(track) <= PlaybackFrameRatePolicy.MaximumTrialReportedFrameRate),
                     IsProbe = !provided && reason.Length == 0,
                     Reason = id == actualQuality ? "" : reason.Length > 0 ? reason
                         : !provided ? "选择后向B站请求此档画质" : ""
@@ -853,16 +1380,41 @@ namespace BiliXbox.Services
             return result.OrderByDescending(item => item.Id).ToList();
         }
 
-        private static void SetPlaybackDiagnostics(PlaybackInfo playback, JToken data, int requestedQuality)
+        private void SetPlaybackDiagnostics(PlaybackInfo playback, JToken data, int requestedQuality)
         {
+            SetPlaybackAudioMetadata(playback, data);
             playback.RequestedQualityId = requestedQuality;
             playback.ServerQualityId = (int)Number(data, "quality");
-            if (playback.QualityId == requestedQuality) return;
+            var raw = data["dash"]?["video"] as JArray ?? new JArray();
+            var capabilities = data.Annotation<PlaybackTrackCapabilities>();
             var requested = playback.AvailableQualities.FirstOrDefault(item => item.Id == requestedQuality);
             var target = requested?.Label ?? ("画质 " + Invariant(requestedQuality));
-            playback.QualityNotice = "已请求 " + target + "，B站本次未返回该档兼容播放源，实际播放 " + playback.Quality + "。";
-            if (requested != null && !requested.IsAvailable && requested.Reason.Length > 0)
-                playback.QualityNotice += requested.Reason + "。";
+            if (playback.QualityId != requestedQuality)
+            {
+                playback.QualityFailure = !raw.Any(track => Number(track, "id") == requestedQuality) ? PlaybackQualityFailure.ServerNotReturned
+                    : requested?.IsCapabilityPending == true ? PlaybackQualityFailure.CapabilityUnconfirmed
+                    : capabilities?.DeviceBlocked.Contains(requestedQuality) == true ? PlaybackQualityFailure.DeviceUnsupported
+                    : PlaybackQualityFailure.SourceUnsupported;
+                var cause = playback.QualityFailure == PlaybackQualityFailure.ServerNotReturned ? "服务端未返回该档视频流"
+                    : playback.QualityFailure == PlaybackQualityFailure.DeviceUnsupported ? "设备不支持返回轨道的编码或显示要求"
+                    : playback.QualityFailure == PlaybackQualityFailure.CapabilityUnconfirmed ? "设备能力尚未确认"
+                    : "返回轨道的分辨率、格式或分段信息不符合播放要求";
+                playback.QualityNotice = "已请求 " + target + "，" + cause + "，实际播放 " + playback.Quality + "。";
+                if (requested != null && !requested.IsAvailable && requested.Reason.Length > 0)
+                    playback.QualityNotice += requested.Reason + "。";
+            }
+            var report = new System.Text.StringBuilder("candidate requestedQn=" + requestedQuality + " fnval=" + (data.Annotation<PlaybackRequestMetadata>()?.Fnval ?? 2000) + " fourk=1"
+                + " auth=" + IsLoggedIn + " sessionCookie=" + !string.IsNullOrEmpty(_cookies.GetCookieValue("SESSDATA"))
+                + " premium=" + (CurrentUser?.IsPremium == true) + " serverQuality=" + playback.ServerQualityId
+                + " candidateQn=" + playback.QualityId + " trackIndex=" + playback.VideoTrackIndex + " result=" + playback.QualityFailure
+                + "\naccept_quality=" + string.Join(",", (data["accept_quality"] as JArray ?? new JArray()).Select(value => NumberValue(value))));
+            AppendPlaybackTrackDiagnostic(report, data, capabilities);
+            playback.PlaybackDiagnostic = report.ToString();
+            PublishPlaybackDiagnostic("candidate qn=" + playback.QualityId + " trackIndex=" + playback.VideoTrackIndex
+                + " " + playback.VideoWidth + "x" + playback.VideoHeight + " codec=" + SafePlaybackCodec(playback.VideoCodec)
+                + " dynamicRange=" + (playback.IsHdr10 ? "HDR10" : "SDR") + " audio=" + playback.AudioMode
+                + " sourceQn=" + playback.SourceQualityId + " outputRange=" + (playback.IsHdr10 && !playback.UsesSdrToneMapping ? "HDR10" : "SDR")
+                + " nativeSdrToneMapping=" + playback.UsesSdrToneMapping);
         }
 
         private static bool Flag(JToken item, string name)

@@ -6,6 +6,8 @@ if ('BiliXbox.LiveNavigationTests' -as [type]) { throw 'Run in a fresh PowerShel
 $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskParts = @(
     [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\Controls\FeedNavigationState.cs'))
+    [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\Controls\HomeFeedPageCache.cs'))
+    [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\Models\ApiModels.cs'))
     [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\MainPage.Sections.cs'))
 )
 # Keep the actual platform-editor guard; the surrounding window/input and XAML

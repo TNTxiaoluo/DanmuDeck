@@ -54,6 +54,9 @@
     <Compile Include="MainPage.CommentReactions.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackTransport.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackDisplay.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.PlaybackHistory.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.Audio.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.FrameRateValidation.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Interactions.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Sections.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.InlineInput.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>

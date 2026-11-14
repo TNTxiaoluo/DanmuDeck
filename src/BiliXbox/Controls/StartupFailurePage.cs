@@ -1,4 +1,5 @@
 using System;
+using BiliXbox.Services;
 using Windows.UI;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
@@ -25,7 +26,7 @@ namespace BiliXbox.Controls
             panel.Children.Add(new TextBlock { Text = "弹幕舱 暂时无法打开首页", FontSize = 32, TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(new TextBlock
             {
-                Text = "可以按 A 重试。如果仍然失败，请保留下面的错误信息。\n\nv1.0.1 · " + details,
+                Text = "可以按 A 重试。如果仍然失败，请保留下面的错误信息。\n\nv" + AppVersionInfo.DisplayVersion + " · " + details,
                 FontSize = 22, TextWrapping = TextWrapping.Wrap
             });
             var button = new Button { Content = "重新打开", FontSize = 24, MinHeight = 64, IsTabStop = true };

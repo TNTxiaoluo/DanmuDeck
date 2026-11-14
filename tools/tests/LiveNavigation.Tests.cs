@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BiliXbox.Controls;
+using BiliXbox.Models;
 using Windows.System;
 using Windows.UI;
 using Windows.UI.Xaml;
@@ -31,12 +32,19 @@ namespace Windows.UI.Xaml.Controls
         public object Background, Foreground, Tag;
         public string HelpText;
         public bool IsFocusEngaged;
+        public bool IsEnabled = true;
     }
     public class Button : Control { }
     public class TextBox : Control { public string Text = ""; public int MaxLength; }
     public class PasswordBox : Control { }
     public class ComboBox : Control { public bool IsDropDownOpen; }
     public class TextBlock : Control { public string Text; }
+    public class ScrollViewer : Control { public double VerticalOffset; }
+    public class ListViewBase : Control
+    {
+        public readonly List<object> Items = new List<object>();
+        public readonly ScrollViewer Viewer = new ScrollViewer();
+    }
     public class Grid : Control
     {
         public Thickness Padding;
@@ -52,7 +60,21 @@ namespace Windows.UI.Xaml.Media
 }
 namespace Windows.UI.Xaml.Automation { public static class AutomationProperties { public static void SetHelpText(Control control, string text) { control.HelpText = text; } } }
 namespace Windows.UI.Xaml.Input { }
-namespace BiliXbox.Controls { public enum PlayerDirection { Left, Right, Up, Down } }
+namespace BiliXbox.Controls
+{
+    public enum PlayerDirection { Left, Right, Up, Down }
+    public sealed class ViewportScrollResult { public int Index; public object Item; public Control Container; }
+    public static class ViewportFocusScroll
+    {
+        public static ScrollViewer FindScrollViewer(ListViewBase list) => list.Viewer;
+        public static bool Restore(ListViewBase list, double offset, int index, Action<ViewportScrollResult> callback)
+        {
+            list.Viewer.VerticalOffset = offset;
+            var control = new Control(); FocusManager.Current = control;
+            callback(new ViewportScrollResult { Index = index, Item = list.Items[index], Container = control }); return true;
+        }
+    }
+}
 namespace BiliXbox
 {
     public sealed class LiveNavigationView : Control
@@ -92,6 +114,20 @@ namespace BiliXbox
         private CancellationTokenSource _feedCts;
         private bool _disposed, _dialogOpen, _ignore;
         private bool _watching = false;
+        private bool _creatorVisible = false, _libraryVisible = false, _inputPaneVisible = false;
+        private bool _gamepadHomeFeedReplacing, _gamepadHomeInitialFocusDone, _homeScrollPending, _homeManuallyScrolled;
+        private int _gamepadHomeIndex, _manualScrollRevision;
+        private ListViewBase _manuallyScrolledList;
+        private HomeSection? _pendingSection = null;
+        private readonly ListViewBase VideoGrid = new ListViewBase(), UserGrid = new ListViewBase();
+        private ListViewBase HomeResultGrid => VideoGrid;
+        private readonly List<VideoItem> Videos = new List<VideoItem>();
+        private readonly List<object> Users = new List<object>();
+        private readonly TextBlock FeedTitle = new TextBlock(), FeedNotice = new TextBlock(), EmptyState = new TextBlock(), PageLabel = new TextBlock();
+        private readonly Button PreviousPage = new Button(), NextPage = new Button();
+        private bool _hasNextFeed;
+        private long _accountMid = 10, _loadedFeedAccountMid;
+        private long CurrentAccountMid => _accountMid;
         private int _libraryClears, _creatorClears, _focusCancels, _feedLoads, _recommendationRefreshes, _homes, _loginShows, _homeConfirms, _homeActivations;
         private string _status = "";
         private Func<Task> _login = () => Task.CompletedTask;
@@ -101,6 +137,14 @@ namespace BiliXbox
         private void ClearAccountLibraryNavigation() { _libraryClears++; }
         private void ClearCreatorNavigation() { _creatorClears++; }
         private void CancelGamepadListFocus() { _focusCancels++; }
+        private void CancelGamepadHomeFocus() { }
+        private int GamepadHomeVideoIndex(Control control) => _gamepadHomeIndex;
+        private void ReconcileHomeScrollBeforeNavigation() { }
+        private void ApplyHomeScrollFocus(ViewportScrollResult result) { _gamepadHomeIndex = result.Index; }
+        private void FocusGamepadHomeVideo(int index) { _gamepadHomeIndex = index; }
+        private void BeginHomeFeedReplacement() { _gamepadHomeFeedReplacing = true; }
+        private void CompleteHomeFeedReplacement() { _gamepadHomeFeedReplacing = false; _homeFeedFocusAnchor = null; RestoreHomeFeedPageFocus(); }
+        private void UpdateSearchModeUi(FeedRequest request) { }
         private void CancelManualGamepadScroll() { }
         private Task<bool> PrepareSectionTransitionAsync(HomeSection target) => Task.FromResult(true);
         private void StartSectionTransition() { }
@@ -117,7 +161,19 @@ namespace BiliXbox
             if (_feedNavigation.Section == HomeSection.Live && !_feedNavigation.IsSearch) ShowLiveSectionSurface();
             else { Header.Visibility = Footer.Visibility = HomeView.Visibility = Visibility.Visible; WatchView.Visibility = Visibility.Collapsed; }
         }
-        private Task LoadFeedAsync(bool refresh = false) { _feedLoads++; if (refresh) _recommendationRefreshes++; return Task.CompletedTask; }
+        private Task LoadFeedAsync(bool refresh = false)
+        {
+            EnsureHomeFeedAccount(refresh);
+            var request = _feedNavigation.BeginRequest();
+            if (TryRestoreCachedHomeFeed(request)) return Task.CompletedTask;
+            _feedLoads++; if (refresh) _recommendationRefreshes++;
+            Videos.Clear(); VideoGrid.Items.Clear();
+            var video = new VideoItem { Bvid = request.Section + ":" + request.Page + ":" + _feedLoads };
+            Videos.Add(video); VideoGrid.Items.Add(video); FeedTitle.Text = SectionTitle(request.Section);
+            RememberHomeFeedPage(request, CurrentAccountMid, Videos, true, "");
+            CompleteHomeFeedReplacement();
+            return Task.CompletedTask;
+        }
         private void FocusGamepadHomeControl(Control control) { FocusManager.Current = control; }
         private void ConfirmGamepadHome(bool repeat) { _homeConfirms++; if (!repeat) _homeActivations++; }
         private static bool PlayerConfirmKey(VirtualKey key) { return key == VirtualKey.A; }
@@ -149,10 +205,39 @@ namespace BiliXbox
                 check(page._feedNavigation.Section == section && !page._feedNavigation.IsSearch && page._feedNavigation.Page == 1 && page.SearchInput.Text == "", "Selecting each section clears search and page");
                 check(page.SectionButtons.Select((control, index) => control.HelpText == "当前分区" ? index : -1).Single(index => index >= 0) == (int)section, "Selected section matches visual/help state");
                 check(page._feedLoads == (section == HomeSection.Live ? 0 : 1) && page.LiveHub.Shows == (section == HomeSection.Live ? 1 : 0), "Live and video feeds have disjoint loading paths");
-                check(page._recommendationRefreshes == (section == HomeSection.Recommendations ? 1 : 0), "Only recommendation selection requests personalized refresh");
+                check(page._recommendationRefreshes == 0, "Tab selection never explicitly refreshes personalized recommendations");
                 check(page._libraryClears == 1 && page._creatorClears == 1 && page._focusCancels == 1, "Changing section retires unrelated navigation/focus requests");
                 check(page.LiveHub.Writes == 0, "Changing tabs never submits chat/gifts");
             }
+            page = new MainPage(); page.InitializeSections(); await page.LoadFeedAsync();
+            page._feedNavigation.NextPage(); await page.LoadFeedAsync();
+            page._gamepadHomeIndex = 0; page.VideoGrid.Viewer.VerticalOffset = 120;
+            string oldVideo = page.Videos[0].Bvid;
+            await page.SelectSectionAsync(HomeSection.Popular);
+            int loads = page._feedLoads;
+            await page.SelectSectionAsync(HomeSection.Recommendations);
+            check(page._feedLoads == loads && page._feedNavigation.Page == 2 && page.Videos[0].Bvid == oldVideo,
+                "Production section routing restores recommendation page two with identical cards and no network request");
+            check(page.VideoGrid.Viewer.VerticalOffset == 120 && page._gamepadHomeIndex == 0 && page._gamepadHomeInitialFocusDone
+                && !page._homeScrollPending && page._homeManuallyScrolled && page._manuallyScrolledList == page.VideoGrid
+                && page._hasNextFeed && page._loadedFeedAccountMid == 10,
+                "Returning to a tab restores its viewport and selected result");
+            await page.SelectSectionAsync(HomeSection.Recommendations);
+            check(page._feedLoads == loads && page._feedNavigation.Page == 2,
+                "Selecting the current tab cannot reset its page or change the feed batch");
+            page._accountMid = 11; await page.SelectSectionAsync(HomeSection.Popular);
+            check(page._homeFeedPages.AccountMid == 11 && page._feedNavigation.Page == 1 && page._feedLoads == loads + 1,
+                "Account switch clears previous user's views and tab pages before routing");
+            var oldRequest = page._visibleHomeFeedRequest;
+            HomeFeedPageCache.Page oldPage;
+            page._homeFeedPages.TryGet(HomeSection.Popular, 1, out oldPage);
+            page._accountMid = 12; page._gamepadHomeIndex = 99; page.VideoGrid.Viewer.VerticalOffset = 999;
+            page.CaptureVisibleHomeFeedPosition();
+            check(!oldPage.HasPosition, "An account change cannot capture old visible content using the new user's identity.");
+            page.EnsureHomeFeedAccount();
+            page.RememberHomeFeedPage(oldRequest, 11, new[] { new VideoItem { Bvid = "stale-private" } }, false, "");
+            check(!page._homeFeedPages.TryGet(HomeSection.Popular, 1, out oldPage) && page._visibleHomeFeedRequest == null,
+                "A late response from the old account cannot fill the new account's UI cache.");
             foreach (var target in new[] { HomeSection.Recommendations, HomeSection.Popular, HomeSection.Animation, HomeSection.Film })
             {
                 page = new MainPage(); page.InitializeSections(); await page.SelectSectionAsync(HomeSection.Live);

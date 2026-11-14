@@ -48,6 +48,24 @@ namespace Windows.Media.Protection
             => Query == null ? ProtectionCapabilityResult.NotSupported : Query(contentType, keySystem);
     }
 }
+namespace Windows.Media.Core
+{
+    public enum CodecKind { Audio, Video }
+    public enum CodecCategory { Decoder, Encoder }
+    public sealed class CodecInfo { }
+    public static class CodecSubtypes
+    {
+        public static string AudioFormatDolbyDDPlus => "fixture-DDPlus";
+        public static string AudioFormatDolbyAC3 => "fixture-AC3";
+        public static string AudioFormatFlac => "fixture-FLAC";
+    }
+    public sealed class CodecQuery
+    {
+        public static Func<CodecKind, CodecCategory, string, IReadOnlyList<CodecInfo>> Query;
+        public Windows.Web.Http.TestOperation<IReadOnlyList<CodecInfo>> FindAllAsync(CodecKind kind, CodecCategory category, string subtype)
+            => new Windows.Web.Http.TestOperation<IReadOnlyList<CodecInfo>>(token => Task.FromResult(Query == null ? Array.Empty<CodecInfo>() : Query(kind, category, subtype)));
+    }
+}
 namespace Windows.Graphics.Display
 {
     public enum AdvancedColorKind { StandardDynamicRange, WideColorGamut, Hdr10, DolbyVision }

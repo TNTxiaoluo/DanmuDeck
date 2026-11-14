@@ -40,6 +40,7 @@ namespace Windows.Web.Http.Filters
 }
 namespace Windows.Web.Http
 {
+    internal sealed class HttpResponseMessage { internal int StatusCode; }
     internal sealed class FixtureHeaders : Dictionary<string, string>
     {
         internal Uri Referer;
@@ -73,15 +74,32 @@ namespace Windows.Media.Streaming.Adaptive
     {
         internal Uri ResourceUri;
         internal uint RequestId;
+        internal int ResourceType;
+        internal ulong? ResourceByteRangeOffset;
         internal ulong? ResourceByteRangeLength;
         internal readonly FixtureDownloadResult Result = new FixtureDownloadResult();
     }
     internal sealed class FixtureDownloadResult { internal Uri ResourceUri; }
-    internal sealed class AdaptiveMediaSourceDownloadFailedEventArgs { internal uint RequestId; }
-    internal sealed class AdaptiveMediaSourceDownloadStatistics { internal ulong ContentBytesReceivedCount; }
+    internal sealed class AdaptiveMediaSourceDownloadFailedEventArgs
+    {
+        internal uint RequestId;
+        internal int ResourceType;
+        internal HttpResponseMessage HttpResponseMessage;
+        internal Exception ExtendedError;
+        internal AdaptiveMediaSourceDownloadStatistics Statistics;
+    }
+    internal sealed class AdaptiveMediaSourceDownloadStatistics
+    {
+        internal ulong ContentBytesReceivedCount;
+        internal bool ThrowTiming;
+        internal TimeSpan FirstByte, LastByte;
+        internal TimeSpan TimeToFirstByteReceived { get { if(ThrowTiming) throw new InvalidOperationException("timing fixture secret"); return FirstByte; } }
+        internal TimeSpan TimeToLastByteReceived => LastByte;
+    }
     internal sealed class AdaptiveMediaSourceDownloadCompletedEventArgs
     {
         internal uint RequestId;
+        internal int ResourceType;
         internal AdaptiveMediaSourceDownloadStatistics Statistics;
         internal ulong? ResourceByteRangeLength;
     }
@@ -110,6 +128,7 @@ namespace Windows.Media.Streaming.Adaptive
         }
         internal void Request(AdaptiveMediaSourceDownloadRequestedEventArgs value) => DownloadRequested?.Invoke(this, value);
         internal void Fail(uint id) => DownloadFailed?.Invoke(this, new AdaptiveMediaSourceDownloadFailedEventArgs { RequestId = id });
+        internal void Fail(AdaptiveMediaSourceDownloadFailedEventArgs value) => DownloadFailed?.Invoke(this, value);
         internal void Complete(AdaptiveMediaSourceDownloadCompletedEventArgs value) => DownloadCompleted?.Invoke(this, value);
         public void Dispose() { ++Disposed; }
     }
@@ -159,13 +178,25 @@ namespace BiliXbox.AdaptiveSourceTests
             native.ThrowRate = true;
             Check(owner.CurrentDownloadBytesPerSecond == -1, "unavailable native statistics do not stop playback");
             native.ThrowRate = false;
-            var request = new AdaptiveMediaSourceDownloadRequestedEventArgs { ResourceUri = new Uri(Video), RequestId = 17, ResourceByteRangeLength = 1024 };
+            var diagnostics = new List<string>();
+            var eventGate = typeof(AdaptivePlaybackSource).GetField("_eventGate",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance).GetValue(owner);
+            bool diagnosticLockHeld = false;
+            owner.DownloadDiagnostic += value => {throw new InvalidOperationException("subscriber URL https://private.invalid/?secret=private");};
+            owner.DownloadDiagnostic += value => { diagnosticLockHeld |= Monitor.IsEntered(eventGate); diagnostics.Add(value); };
+            var request = new AdaptiveMediaSourceDownloadRequestedEventArgs { ResourceUri = new Uri(Video), RequestId = 17, ResourceType = 3,
+                ResourceByteRangeOffset = 2048, ResourceByteRangeLength = 1024 };
             native.Request(request);
             Check(request.Result.ResourceUri.AbsoluteUri == Backup && request.ResourceByteRangeLength == 1024,
                 "native request retains its range while routing to the server-issued signed backup");
             native.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs { RequestId = 17,
-                Statistics = new AdaptiveMediaSourceDownloadStatistics { ContentBytesReceivedCount = 400 }, ResourceByteRangeLength = 9000 });
+                Statistics = new AdaptiveMediaSourceDownloadStatistics { ContentBytesReceivedCount = 400,
+                    FirstByte=TimeSpan.FromMilliseconds(12),LastByte=TimeSpan.FromMilliseconds(48) }, ResourceByteRangeLength = 9000 });
             Check(owner.TotalDownloadedBytes == 400, "byte telemetry counts native received content, not requested range length");
+            Check(diagnostics[0].Contains("id=17 type=3 rangeOffset=2048 rangeLength=1024")
+                && diagnostics[1].Contains("receivedBytes=400 firstByteMs=12 lastByteMs=48"),
+                "DASH diagnostics report native requested ranges and received bytes/timing as distinct facts");
+            Check(!diagnosticLockHeld && diagnostics.Count==2,
+                "diagnostics run outside the native event lock and a failed subscriber cannot suppress a healthy subscriber");
             native.Fail(17);
             Check(owner.RouteChangeCount == 0, "completed native request cannot later rotate a healthy backup");
             native.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs { RequestId = 18,
@@ -177,6 +208,16 @@ namespace BiliXbox.AdaptiveSourceTests
             native.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs { RequestId = 20,
                 Statistics = new AdaptiveMediaSourceDownloadStatistics { ContentBytesReceivedCount = ulong.MaxValue } });
             Check(owner.TotalDownloadedBytes == long.MaxValue, "untrusted or long-running download totals saturate without overflow");
+            native.Fail(new AdaptiveMediaSourceDownloadFailedEventArgs {RequestId=21,ResourceType=3,
+                HttpResponseMessage=new HttpResponseMessage {StatusCode=503},
+                ExtendedError=new InvalidOperationException("https://private.invalid/?credential=fixture-diagnostic-secret"),
+                Statistics=new AdaptiveMediaSourceDownloadStatistics{ContentBytesReceivedCount=99,ThrowTiming=true}});
+            Check(diagnostics.Last().Contains("download-failed id=21 type=3 httpStatus=503 hresult=0x")
+                && diagnostics.Last().Contains("receivedBytes=99 timing=unavailable")
+                && owner.TotalDownloadedBytes==long.MaxValue, "failed requests expose status/partial-byte facts without changing completed-byte accounting");
+            Check(diagnostics.All(value=>!value.Contains("https://")&&!value.Contains("token=")
+                && !value.Contains("fixture-diagnostic-secret")&&!value.Contains("timing fixture secret")),
+                "no media URLs, signed queries, native exception messages or subscriber messages enter request telemetry");
             int mediaDisposed = MediaSource.Disposed, adaptiveDisposed = AdaptiveMediaSource.Disposed,
                 httpDisposed = HttpClient.Disposed, filterDisposed = HttpBaseProtocolFilter.Disposed;
             owner.Dispose(); owner.Dispose();
@@ -185,6 +226,22 @@ namespace BiliXbox.AdaptiveSourceTests
             Check(MediaSource.Disposed == mediaDisposed + 1 && AdaptiveMediaSource.Disposed == adaptiveDisposed + 1
                 && HttpClient.Disposed == httpDisposed + 1 && HttpBaseProtocolFilter.Disposed == filterDisposed + 1,
                 "native source, client and filter each release once");
+            int afterDispose=diagnostics.Count;
+            native.Fail(22);native.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs{RequestId=22});
+            Check(diagnostics.Count==afterDispose
+                && typeof(AdaptivePlaybackSource).GetField("DownloadDiagnostic",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance).GetValue(owner)==null,
+                "disposal clears subscribers and prevents subsequent native callbacks from producing telemetry");
+            using(var bounded=await AdaptivePlaybackSource.OpenAsync(Manifest,CancellationToken.None))
+            {
+                var boundedNative=AdaptiveMediaSource.Last;var boundedLog=new List<string>();bounded.DownloadDiagnostic+=boundedLog.Add;
+                for(uint id=0;id<AdaptivePlaybackSource.MaximumDiagnosticEvents*2;++id)
+                    boundedNative.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs{RequestId=id,
+                        Statistics=new AdaptiveMediaSourceDownloadStatistics{ContentBytesReceivedCount=1}});
+                Check(boundedLog.Count==AdaptivePlaybackSource.MaximumDiagnosticEvents
+                    && boundedLog.Last().StartsWith("download-telemetry-limit"), "per-source native event telemetry has a fixed bound and explicit limit marker");
+                Check(bounded.TotalDownloadedBytes==AdaptivePlaybackSource.MaximumDiagnosticEvents*2,
+                    "telemetry limit never stops native completion processing or data accounting");
+            }
             AdaptiveMediaSource.ThrowWindow = true;
             using (var telemetryUnavailable = await AdaptivePlaybackSource.OpenAsync(Manifest, CancellationToken.None))
                 Check(telemetryUnavailable.Source != null, "optional statistic-window configuration cannot prevent opening media");

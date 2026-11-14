@@ -24,7 +24,7 @@ using Windows.Foundation.Metadata;
 using Windows.Graphics.Display.Core;
 using Windows.System.Profile;
 '@
-foreach ($taskFile in @('src\BiliXbox\Models\ApiModels.cs', 'src\BiliXbox\Services\PlaybackDisplayController.cs',
+foreach ($taskFile in @('src\BiliXbox\Models\ApiModels.cs', 'src\BiliXbox\Services\PlaybackFrameRatePolicy.cs', 'src\BiliXbox\Services\PlaybackOutputSizePolicy.cs', 'src\BiliXbox\Services\PlaybackDisplayController.cs',
     'tools\tests\PlaybackDisplay.Tests.cs')) {
     $taskSource += [Environment]::NewLine + [regex]::Replace([IO.File]::ReadAllText((Join-Path $taskRoot $taskFile)), '(?m)^using [^;]+;\r?\n', '')
 }

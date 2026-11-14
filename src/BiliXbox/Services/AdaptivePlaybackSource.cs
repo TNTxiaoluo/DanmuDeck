@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Threading;
@@ -24,6 +25,10 @@ namespace BiliXbox.Services
         private DashRoutePolicy _routes;
         private bool _disposed;
         private long _completedDownloadBytes;
+        private long _requestedCount, _completedCount, _failedCount;
+        private int _diagnosticEvents;
+        internal const int MaximumDiagnosticEvents = 256;
+        internal event Action<string> DownloadDiagnostic;
         public MediaSource Source { get; private set; }
         public double CurrentDownloadBytesPerSecond
         {
@@ -109,47 +114,121 @@ namespace BiliXbox.Services
 
         private void DownloadRequested(AdaptiveMediaSource sender, AdaptiveMediaSourceDownloadRequestedEventArgs args)
         {
+            string diagnostic;
             lock (_eventGate)
             {
                 if (_disposed) return;
+                ++_requestedCount;
                 var uri = _routes.ResolveRequest(args.ResourceUri, args.RequestId.ToString());
                 if (uri != null && uri != args.ResourceUri)
                     args.Result.ResourceUri = uri;
                 // Keep the native SegmentBase range and production HttpClient
                 // headers. No full-track buffering or synthesized ranges.
+                string detail;
+                try
+                {
+                    detail = "id=" + args.RequestId + " type=" + (int)args.ResourceType
+                        + " rangeOffset=" + OptionalNumber(args.ResourceByteRangeOffset)
+                        + " rangeLength=" + OptionalNumber(args.ResourceByteRangeLength);
+                }
+                catch (Exception) { detail = "metadata=unavailable"; }
+                diagnostic = CaptureDiagnostic("download-requested " + detail);
             }
+            PublishDiagnostic(diagnostic);
         }
 
         private void DownloadFailed(AdaptiveMediaSource sender, AdaptiveMediaSourceDownloadFailedEventArgs args)
         {
+            string diagnostic;
             lock (_eventGate)
             {
-                if (!_disposed) _routes.ReportFailure(args.RequestId.ToString());
+                if (_disposed) return;
+                ++_failedCount;
+                _routes.ReportFailure(args.RequestId.ToString());
                 // DownloadFailed is a notification, not a retry API. Native
                 // retries use the new route; the UI can also rebuild boundedly.
+                string detail;
+                try
+                {
+                    ulong ignored;
+                    detail = "id=" + args.RequestId + " type=" + (int)args.ResourceType
+                        + " httpStatus=" + (args.HttpResponseMessage == null ? 0 : (int)args.HttpResponseMessage.StatusCode)
+                        + " hresult=0x" + (args.ExtendedError?.HResult ?? 0).ToString("X8", CultureInfo.InvariantCulture)
+                        + " " + DownloadStatistics(args.Statistics, out ignored);
+                }
+                catch (Exception) { detail = "metadata=unavailable"; }
+                diagnostic = CaptureDiagnostic("download-failed " + detail);
             }
+            PublishDiagnostic(diagnostic);
         }
 
         private void DownloadCompleted(AdaptiveMediaSource sender, AdaptiveMediaSourceDownloadCompletedEventArgs args)
         {
+            string diagnostic;
             lock (_eventGate)
             {
                 if (_disposed) return;
+                ++_completedCount;
                 _routes.CompleteRequest(args.RequestId.ToString());
                 // These native statistics are for telemetry only. Never use
                 // them to change quality or infer that decoding is keeping up.
+                string detail;
                 try
                 {
-                    var statistics = args.Statistics;
-                    if (statistics != null)
-                    {
-                        ulong received = statistics.ContentBytesReceivedCount;
-                        _completedDownloadBytes += (long)Math.Min(received,
-                            (ulong)(long.MaxValue - _completedDownloadBytes));
-                    }
+                    ulong received;
+                    detail = "id=" + args.RequestId + " type=" + (int)args.ResourceType
+                        + " " + DownloadStatistics(args.Statistics, out received);
+                    _completedDownloadBytes += (long)Math.Min(received,
+                        (ulong)(long.MaxValue - _completedDownloadBytes));
                 }
-                catch (Exception) { /* Missing optional statistics are harmless. */ }
+                catch (Exception) { detail = "metadata=unavailable"; }
+                diagnostic = CaptureDiagnostic("download-completed " + detail);
             }
+            PublishDiagnostic(diagnostic);
+        }
+
+        private static string OptionalNumber(ulong? value)
+            => value.HasValue ? value.Value.ToString(CultureInfo.InvariantCulture) : "unknown";
+
+        private static string Milliseconds(TimeSpan? value)
+            => value.HasValue ? value.Value.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture) : "unknown";
+
+        private static string DownloadStatistics(AdaptiveMediaSourceDownloadStatistics statistics, out ulong received)
+        {
+            received = 0;
+            if (statistics == null) return "statistics=unavailable";
+            received = statistics.ContentBytesReceivedCount;
+            string result = "receivedBytes=" + received.ToString(CultureInfo.InvariantCulture);
+            try
+            {
+                result += " firstByteMs=" + Milliseconds(statistics.TimeToFirstByteReceived)
+                    + " lastByteMs=" + Milliseconds(statistics.TimeToLastByteReceived);
+            }
+            catch (Exception) { result += " timing=unavailable"; }
+            return result;
+        }
+
+        // Caller holds _eventGate. Fixed-size counters and a per-source event
+        // budget keep telemetry bounded; it never controls native downloading.
+        private string CaptureDiagnostic(string value)
+        {
+            if (DownloadDiagnostic == null || _diagnosticEvents >= MaximumDiagnosticEvents) return null;
+            if (++_diagnosticEvents == MaximumDiagnosticEvents) value = "download-telemetry-limit";
+            return value + " requested=" + _requestedCount + " completed=" + _completedCount
+                + " failed=" + _failedCount + " totalBytes=" + _completedDownloadBytes
+                + " routeChanges=" + _routes.RouteChangeCount;
+        }
+
+        private void PublishDiagnostic(string value)
+        {
+            if (value == null) return;
+            var handlers = DownloadDiagnostic;
+            if (handlers == null) return;
+            // Subscribers run after releasing the native event-state lock.
+            // Never allow a failed diagnostic sink to interrupt media callbacks.
+            foreach (Action<string> handler in handlers.GetInvocationList())
+                try { handler(value); }
+                catch (Exception) { }
         }
 
         public void Dispose()
@@ -158,6 +237,7 @@ namespace BiliXbox.Services
             {
                 if (_disposed) return;
                 _disposed = true;
+                DownloadDiagnostic = null;
                 if (_adaptive != null)
                 {
                     _adaptive.DownloadRequested -= DownloadRequested;

@@ -203,6 +203,21 @@ namespace BiliXbox.ViewportScrollTests
             f = new Fixture(); var button = f.List.Rows[0]; Windows.UI.Xaml.Input.FocusManager.Current = button;
             Controls.ViewportFocusScroll.Scroll(f.Viewer, 160, value => result = value); f.Viewer.Dispatcher.Drain();
             check(result.Index == -1 && result.Container != null && f.Viewer.VerticalOffset == 160, "General settings viewport chooses visible controls without a list index");
+            f = new Fixture(); result = null;
+            check(Controls.ViewportFocusScroll.Restore(f.List, 240, 9, value => result = value), "Cached page can request its exact scroll offset and selected column");
+            f.Viewer.Dispatcher.Drain();
+            check(f.Viewer.VerticalOffset == 240 && result.Index == 9, "Cached page restores its selected card without snapping the viewport to its top edge");
+            check(f.Viewer.ChangeCalls == 1, "Native focus cannot issue a second scroll while restoring a cached page");
+            int restores = 0; f = new Fixture();
+            Controls.ViewportFocusScroll.Restore(f.List, 240, 9, value => ++restores);
+            Controls.ViewportFocusScroll.Cancel(f.List); f.Viewer.Dispatcher.Drain();
+            check(restores == 0, "Switching away before cached layout completes rejects stale focus restoration");
+            f = new Fixture(); Controls.ViewportFocusScroll.Restore(f.List, 240, 9, value => ++restores);
+            f.List.Items[0] = new object(); f.Viewer.Dispatcher.Drain();
+            check(restores == 0, "An asynchronously replaced page cannot receive cached-page focus");
+            f = new Fixture(); Controls.ViewportFocusScroll.Restore(f.List, 240, 0, value => result = value); f.Viewer.Dispatcher.Drain();
+            check(result.Index >= 6 && result.Index <= 9 && f.Viewer.VerticalOffset == 240,
+                "An offscreen saved selection is reconciled to a visible row without moving the saved viewport");
             var choices = new List<Controls.ViewportScrollCandidate> {
                 new Controls.ViewportScrollCandidate { Left = 0, Top = -50, Width = 100, Height = 100 },
                 new Controls.ViewportScrollCandidate { Left = 0, Top = 50, Width = 100, Height = 100 } };

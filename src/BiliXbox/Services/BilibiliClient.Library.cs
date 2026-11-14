@@ -154,10 +154,11 @@ namespace BiliXbox.Services
         }
 
         public async Task<PlaybackInfo> GetEpisodePlaybackAsync(long episodeId, int quality = 80,
-            CancellationToken ct = default(CancellationToken))
+            CancellationToken ct = default(CancellationToken), PlaybackAudioMode audioMode = PlaybackAudioMode.Standard)
         {
             CheckId(episodeId, nameof(episodeId));
             if (quality <= 0) throw new ArgumentOutOfRangeException(nameof(quality));
+            if (!Enum.IsDefined(typeof(PlaybackAudioMode), audioMode)) throw new ArgumentOutOfRangeException(nameof(audioMode));
             long owner = RequireLibraryAccount();
             // PGC rights are evaluated by the official episode endpoint. Never
             // replace a rejected episode with its UGC BV playback endpoint.
@@ -170,9 +171,10 @@ namespace BiliXbox.Services
                 throw new BilibiliApiException(-1, "此分集需要本客户端暂不支持的版权保护播放，请使用官方客户端。");
             var dash = data["dash"] as JObject;
             var rawVideos = dash?["video"] as JArray ?? new JArray();
-            var videos = rawVideos.Where(ClearLibraryTrack).Where(DashManifestBuilder.IsSupportedVideo)
+            var videos = rawVideos.Where(track => PlaybackVideoRejectionReason(track).Length == 0)
                 .Where(track => Number(track, "id") > 0).ToList();
             var capabilities = await FilterPlaybackCapabilitiesAsync(data, videos, ct);
+            PublishTrackCatalogue(data, capabilities, quality);
             EnsureLibraryAccount(owner, ct);
             var hardware = capabilities.HardwareHevc;
             var fourKDisplay = capabilities.FourKDisplay;
@@ -180,33 +182,21 @@ namespace BiliXbox.Services
             var blockedQualities = capabilities.BlockedQualities;
             var unknownQualities = capabilities.UnknownQualities;
             videos = capabilities.Allowed;
-            var audio = (dash?["audio"] as JArray ?? new JArray()).Where(ClearLibraryTrack)
-                .Where(DashManifestBuilder.IsSupportedAudio).OrderByDescending(track => Number(track, "bandwidth")).FirstOrDefault();
+            var audioSelection = await SelectPlaybackAudioAsync(data, audioMode, ct);
+            EnsureLibraryAccount(owner, ct);
+            var audio = audioSelection.Selected;
             if (videos.Count == 0 || audio == null)
             {
                 var compatible = MapMp4Playback(data, blockedQualities, unknownQualities);
                 compatible.CapabilityDiagnostic = capabilities.Diagnostic;
                 SetPlaybackDiagnostics(compatible, data, quality);
+                PublishSelectedPlayback(compatible);
                 return compatible;
             }
-            var selected = videos.Where(track => Number(track, "id") <= quality).OrderByDescending(track => Number(track, "id"))
-                .ThenBy(track => hardware.Contains(track) && (IsTrueUhdVideo(track) || DashManifestBuilder.IsHdr10(track)) ? 0
-                    : Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
-                .ThenByDescending(track => Number(track, "bandwidth")).FirstOrDefault() ?? videos.OrderBy(track => Number(track, "id")).First();
-            var provided = new HashSet<int>(videos.Select(track => (int)Number(track, "id")));
             double duration;
             if (!double.TryParse(Str(dash, "duration"), NumberStyles.Float, CultureInfo.InvariantCulture, out duration)) duration = 0;
-            var playback = CreateDashPlayback(data, selected, audio, duration, quality, provided, rawVideos,
-                hardware.Contains(selected), fourKDisplay.Contains(selected), hdr10Display.Contains(selected), blockedQualities,
-                unknownQualities, capabilities.Diagnostic);
-            if (IsHevc(selected))
-            {
-                var fallback = videos.Where(track => Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
-                    && Number(track, "id") <= playback.QualityId).OrderByDescending(track => Number(track, "id") <= 80)
-                    .ThenByDescending(track => Number(track, "id")).FirstOrDefault();
-                if (fallback != null) playback.CodecFallback = CreateDashPlayback(data, fallback, audio, duration, quality, provided, rawVideos,
-                    false, fourKDisplay.Contains(fallback), hdr10Display.Contains(fallback), blockedQualities, unknownQualities, capabilities.Diagnostic);
-            }
+            var playback = CreateDashPlaybackChain(data, videos, audioSelection, duration, quality, rawVideos, capabilities);
+            PublishSelectedPlayback(playback);
             return playback;
         }
 

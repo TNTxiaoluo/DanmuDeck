@@ -25,6 +25,7 @@ namespace BiliXbox.FeedNavigationTests
             InvalidModesDoNotCorruptNavigation();
             NewQueryCanRetainExplicitUserMode();
             SectionsKeepIndependentRequests();
+            TabSwitchesRestorePagesAndInvalidateOldRequests();
             return _checks + " feed navigation checks passed.";
         }
 
@@ -328,6 +329,32 @@ namespace BiliXbox.FeedNavigationTests
             var search = state.BeginRequest(); state.Refresh();
             Check(state.Keyword == "keyword" && state.Page == 2 && state.Mode == Controls.FeedSearchMode.Users && !state.IsCurrent(search),
                 "Refreshing user search preserves the selected query, mode and page.");
+        }
+
+        private static void TabSwitchesRestorePagesAndInvalidateOldRequests()
+        {
+            var state = new Controls.FeedNavigationState();
+            state.NextPage(); state.NextPage();
+            var recommendations = state.BeginRequest();
+            state.SwitchSection(Controls.HomeSection.Popular);
+            Check(state.Page == 1 && !state.IsCurrent(recommendations), "A first tab visit starts at page one and rejects the outgoing response.");
+            state.NextPage(); var popular = state.BeginRequest();
+            state.SwitchSection(Controls.HomeSection.Recommendations);
+            Check(state.Page == 3 && !state.IsCurrent(popular), "Returning to recommendations preserves its page instead of fetching a new first batch.");
+            state.SwitchSection(Controls.HomeSection.Popular);
+            Check(state.Page == 2, "Each tab remembers its own independently browsed page.");
+            state.Search("science"); state.NextPage();
+            state.SwitchSection(Controls.HomeSection.Popular);
+            Check(state.Page == 2 && !state.IsSearch, "Search pagination cannot overwrite the underlying section page.");
+            state.Refresh(); state.SwitchSection(Controls.HomeSection.Recommendations); state.SwitchSection(Controls.HomeSection.Popular);
+            Check(state.Page == 1, "An explicit refresh resets only the refreshed section's page.");
+            var pending = state.BeginRequest(); state.ResetHomePages();
+            Check(!state.IsCurrent(pending), "Changing account scope invalidates an outgoing response before a new request.");
+            state.SwitchSection(Controls.HomeSection.Recommendations);
+            Check(state.Page == 1, "A new account cannot inherit the previous account's recommendation cursor page.");
+            var current = state.BeginRequest(); bool rejected = false;
+            try { state.SwitchSection((Controls.HomeSection)99); } catch (ArgumentOutOfRangeException) { rejected = true; }
+            Check(rejected && state.IsCurrent(current), "Invalid tab input preserves the current page and request.");
         }
 
         private static void Check(bool condition, string message)

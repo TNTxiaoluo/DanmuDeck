@@ -1,12 +1,17 @@
 param(
     [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
     [string]$MSBuildPath,
+    [string]$ProjectPath,
     [string]$CertificatePath,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\AppPackages')
 )
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $solutionPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\BiliXbox.sln'))
+if ($ProjectPath) {
+    $solutionPath = (Resolve-Path -LiteralPath $ProjectPath).Path
+    if ([IO.Path]::GetExtension($solutionPath) -notin @('.csproj', '.sln')) { throw 'ProjectPath must select a .csproj or .sln.' }
+}
 if (-not $MSBuildPath) {
     $localMSBuild = Join-Path $workspaceRoot '.tools\vs2022\MSBuild\Current\Bin\MSBuild.exe'
     if (Test-Path -LiteralPath $localMSBuild) { $MSBuildPath = $localMSBuild }

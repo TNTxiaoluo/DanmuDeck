@@ -2,6 +2,7 @@
 // HDMI controller and unrelated page/navigation methods are substituted.
 namespace BiliXbox.Services
 {
+    internal static class PlaybackDiagnosticsLog { internal static void Record(string report) { } }
     internal sealed class PlaybackDisplayController
     {
         internal static int Constructed, PrepareCount, ResetCount;
@@ -39,6 +40,8 @@ namespace BiliXbox
         private Task LoadPartAsync(long cid, int? quality = null, bool preservePosition = false, PlaybackInfo preparedPlayback = null)
         { ++LoadCount; Loaded = preparedPlayback; if (!preservePosition) throw new Exception("resume target was not preserved"); return Task.CompletedTask; }
         public void SuspendPlayback() { ++SuspendCount; _wantsPlayback = _resumeAfterOpen = false; _media.Pause(); }
+        private Task FlushPlaybackHistoryAsync() => Task.CompletedTask;
+        private static void RecordPlaybackTrack(string phase, PlaybackInfo playback, string detail = "") { }
         internal Task<PlaybackInfo> PrepareForTest(PlaybackInfo value, CancellationToken ct) => PrepareSourceDisplayAsync(value, ct);
         internal Task PlayForTest() => PlayWithDisplayAsync();
         internal Task ResetForTest() => ResetPlaybackDisplayAsync();
@@ -55,6 +58,7 @@ namespace BiliXbox
         internal void ChangeWatchForTest() { _watchCts = new CancellationTokenSource(); }
         internal void CreatorForTest() { _creatorVisible = true; }
         internal void DisposeForTest() { _disposed = true; }
+        internal void SuspendFlagForTest() { _displaySuspended = true; }
         internal void FallbackForTest(PlaybackInfo fallback) { _playback.CodecFallback = fallback; }
         internal static void MergeForTest(PlaybackInfo current, PlaybackInfo latest) => MergePlaybackQualities(current, latest);
     }
@@ -97,7 +101,77 @@ namespace BiliXbox.DisplayIntegrationTests
             original.CodecFallback = new PlaybackInfo { IsHdr10 = true };
             int calls = PlaybackDisplayController.PrepareCount;
             try { await page.PrepareForTest(original, CancellationToken.None); throw new Exception("FAIL: unprepared HDR accepted"); }
-            catch (InvalidOperationException) { Check(PlaybackDisplayController.PrepareCount == calls + 1, "HDR fallback does not masquerade as SDR"); }
+            catch (InvalidOperationException) { Check(PlaybackDisplayController.PrepareCount == calls + 2, "each HDR candidate is checked independently and neither masquerades as SDR"); }
+            var hdrAlternate = new PlaybackInfo { QualityId = 125, Quality = "HDR10", IsHdr10 = true };
+            original.CodecFallback = hdrAlternate;
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(value == hdrAlternate);
+            calls = PlaybackDisplayController.PrepareCount;
+            Check(await page.PrepareForTest(original, CancellationToken.None) == hdrAlternate
+                && PlaybackDisplayController.PrepareCount == calls + 2 && hdrAlternate.QualityNotice.Contains("HDR10")
+                && !hdrAlternate.QualityNotice.Contains("SDR"), "compatible same-tier HDR candidate is tried before lowering quality");
+            var uhdA = new PlaybackInfo { QualityId = 120, Quality = "4K" };
+            var uhdB = new PlaybackInfo { QualityId = 120, Quality = "4K" };
+            var low = new PlaybackInfo { QualityId = 80, Quality = "1080P" };
+            uhdA.CodecFallback = uhdB; uhdB.CodecFallback = low;
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(value == uhdB);
+            Check(await page.PrepareForTest(uhdA, CancellationToken.None) == uhdB,
+                "display failure tries the next real4K candidate before1080P");
+            var mapped=new PlaybackInfo { QualityId=120,SourceQualityId=125,Quality="4K",IsHdr10=true,
+                UsesSdrToneMapping=true,VideoBitsPerChannel=10,VideoWidth=3840,VideoHeight=2160 };
+            original.CodecFallback=mapped;
+            PlaybackDisplayController.Prepare=(value,token)=>Task.FromResult(value==mapped);
+            Check(await page.PrepareForTest(original,CancellationToken.None)==mapped
+                && mapped.QualityNotice.Contains("SDR") && mapped.QualityNotice.Contains("HDR10 源")
+                && mapped.QualityNotice.Contains("色调映射") && mapped.IsHdr10 && mapped.SourceQualityId==125,
+                "output fallback describes realHDR10 source withSDR tone-mapped output honestly");
+            uhdB.CodecFallback = uhdA;
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(false);
+            calls = PlaybackDisplayController.PrepareCount;
+            try { await page.PrepareForTest(uhdA, CancellationToken.None); throw new Exception("FAIL: cycle accepted"); }
+            catch (InvalidOperationException) { Check(PlaybackDisplayController.PrepareCount == calls + 2, "malformed fallback cycle terminates after unique candidates"); }
+
+            var budget = Enumerable.Range(0, 17).Select(index => new PlaybackInfo { QualityId = 120, Quality = "4K", VideoTrackIndex = index }).ToArray();
+            for (int index = 0; index < budget.Length - 1; ++index) budget[index].CodecFallback = budget[index + 1];
+            calls = PlaybackDisplayController.PrepareCount;
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(value == budget[16]);
+            try { await page.PrepareForTest(budget[0], CancellationToken.None); throw new Exception("FAIL: display budget exceeded"); }
+            catch (InvalidOperationException) { Check(PlaybackDisplayController.PrepareCount == calls + 16, "display preparation stops at16 unique candidates without trying17th"); }
+            calls = PlaybackDisplayController.PrepareCount;
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(value == budget[15]);
+            Check(await page.PrepareForTest(budget[0], CancellationToken.None) == budget[15]
+                && PlaybackDisplayController.PrepareCount == calls + 16, "16th accepted candidate remains inside the bounded budget");
+            var audioRetry = new PlaybackInfo { QualityId = 120, Quality = "4K", AudioMode = PlaybackAudioMode.Standard };
+            var dolbyVideo = new PlaybackInfo { QualityId = 120, Quality = "4K", AudioMode = PlaybackAudioMode.Dolby,
+                AudioFallback = audioRetry, CodecFallback = uhdB };
+            var outputAttempts = new List<PlaybackInfo>(); uhdB.CodecFallback = null;
+            PlaybackDisplayController.Prepare = (value, token) => { outputAttempts.Add(value); return Task.FromResult(value == uhdB); };
+            Check(await page.PrepareForTest(dolbyVideo, CancellationToken.None) == uhdB
+                && outputAttempts.Count == 2 && !outputAttempts.Contains(audioRetry), "HDMI failure advances video candidates rather than retrying identical video with another audio track");
+            page.PauseForTest();
+            PlaybackDisplayController.Prepare = (value, token) => Task.FromResult(value == uhdB);
+            Check(await page.PrepareForTest(dolbyVideo, CancellationToken.None) == uhdB && !page.WantsPlay && page.Plays == 0,
+                "candidate preparation does not overwrite the user's paused intent or start playback");
+            PlaybackDisplayController.Clear(); page = new MainPage();
+            using (var cancelPrepare = new CancellationTokenSource())
+            {
+                var delayed = new TaskCompletionSource<bool>();
+                PlaybackDisplayController.Prepare = (value, token) => delayed.Task;
+                var prepareTask = page.PrepareForTest(original, cancelPrepare.Token);
+                cancelPrepare.Cancel(); delayed.SetResult(true);
+                try { await prepareTask; throw new Exception("FAIL: canceled display acceptance returned a candidate"); }
+                catch (OperationCanceledException) { Check(page.Plays == 0 && PlaybackDisplayController.PrepareCount == 1,
+                    "late successful native preparation observes cancellation before returning a candidate"); }
+            }
+            PlaybackDisplayController.Clear(); page = new MainPage();
+            {
+                var delayed = new TaskCompletionSource<bool>();
+                PlaybackDisplayController.Prepare = (value, token) => delayed.Task;
+                var prepareTask = page.PrepareForTest(original, CancellationToken.None);
+                page.SuspendFlagForTest(); delayed.SetResult(true);
+                try { await prepareTask; throw new Exception("FAIL: suspended display acceptance returned a candidate"); }
+                catch (OperationCanceledException) { Check(page.Plays == 0 && PlaybackDisplayController.PrepareCount == 1,
+                    "late successful preparation cannot return a candidate after display suspension"); }
+            }
 
             PlaybackDisplayController.Clear(); page = new MainPage();
             var pending = new TaskCompletionSource<bool>();

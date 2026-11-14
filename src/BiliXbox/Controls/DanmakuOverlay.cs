@@ -312,6 +312,9 @@ namespace BiliXbox.Controls
             double y = Rows(entry.Mode)[lane];
             visual.Translation.X = x;
             SetTop(block, y);
+            // Fixed comments stay above scrolling comments regardless of arrival
+            // order, including when a pooled TextBlock changes comment type.
+            SetZIndex(block, entry.Mode == 1 ? 0 : 1);
             Children.Add(block);
             visual.Entry = entry; visual.Mode = entry.Mode; visual.Lane = lane; visual.Y = y;
             visual.Start = entry.Seconds; visual.End = end; visual.Width = width; visual.Speed = speed; visual.LastX = x;
@@ -331,6 +334,9 @@ namespace BiliXbox.Controls
                 for (int i = 0; i < _visuals.Count; i++)
                 {
                     Visual existing = _visuals[i];
+                    // Fixed and scrolling comments use independent collision
+                    // planes. The top/bottom layer can overlap the moving layer.
+                    if ((mode == 1) != (existing.Mode == 1)) continue;
                     if (Math.Abs(existing.Y - rows[lane]) >= _lineHeight - 0.01) continue;
                     ++occupied;
                     // Every scrolling message shares one speed, so a safe entrance
@@ -368,9 +374,9 @@ namespace BiliXbox.Controls
             int fixedCount = allowed.Count >= 5 ? Math.Min(3, allowed.Count / 5) : Math.Min(1, allowed.Count);
             if (_settings.ShowTop) for (int i = 0; i < fixedCount; ++i) _topRows.Add(allowed[i]);
             if (_settings.ShowBottom) for (int i = 0; i < fixedCount; ++i) _bottomRows.Add(allowed[allowed.Count - 1 - i]);
-            int first = allowed.Count >= 3 && _settings.ShowTop ? fixedCount : 0;
-            int last = allowed.Count - (allowed.Count >= 3 && _settings.ShowBottom ? fixedCount : 0);
-            if (_settings.ShowScrolling) for (int i = first; i < last && _scrollRows.Count < 12; ++i) _scrollRows.Add(allowed[i]);
+            // Use the entire configured area. Fixed rows do not reserve vertical
+            // space in the scrolling layer; AllowedRows already bounds the work.
+            if (_settings.ShowScrolling) _scrollRows.AddRange(allowed);
         }
 
         private List<double> Rows(int mode) => mode == 5 ? _topRows : mode == 4 ? _bottomRows : _scrollRows;

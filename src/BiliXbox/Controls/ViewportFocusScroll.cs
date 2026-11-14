@@ -30,6 +30,7 @@ namespace BiliXbox.Controls
             internal Action<ViewportScrollResult> Callback;
             internal bool Active, Queued, HasAnchor;
             internal int Generation, Count;
+            internal int RestoreIndex = -1, RestoreAttempts;
             internal object First, Last;
             internal double Target, AnchorX, AnchorContentY;
         }
@@ -51,6 +52,7 @@ namespace BiliXbox.Controls
         public static bool Scroll(ListViewBase list, double delta, Action<ViewportScrollResult> reconciled = null, int preferredIndex = -1)
         {
             if (list == null || !IsVisible(list) || list.Items.Count == 0) return false;
+            list.UpdateLayout();
             var viewer = FindScrollViewer(list);
             return ScrollCore(viewer, list, delta, reconciled, preferredIndex);
         }
@@ -60,6 +62,25 @@ namespace BiliXbox.Controls
             return ScrollCore(viewer, null, delta, reconciled, -1);
         }
 
+        public static bool Restore(ListViewBase list, double offset, int preferredIndex,
+            Action<ViewportScrollResult> reconciled = null)
+        {
+            if (list == null || !IsVisible(list) || list.Items.Count == 0) return false;
+            list.UpdateLayout();
+            var viewer = FindScrollViewer(list);
+            if (viewer == null || !IsVisible(viewer)) return false;
+            viewer.UpdateLayout();
+            var state = States.GetValue(viewer, CreateState);
+            Stop(state);
+            state.Active = true; state.List = list; state.Callback = reconciled;
+            state.Count = list.Items.Count; state.First = list.Items[0]; state.Last = list.Items[state.Count - 1];
+            state.RestoreIndex = Math.Max(0, Math.Min(preferredIndex, state.Count - 1)); state.RestoreAttempts = 0;
+            state.Target = ViewportScrollPolicy.ClampOffset(offset, viewer.ScrollableHeight);
+            viewer.ChangeView(null, state.Target, null, true);
+            Queue(state);
+            return true;
+        }
+
         private static bool ScrollCore(ScrollViewer viewer, ListViewBase list, double delta, Action<ViewportScrollResult> callback, int preferredIndex)
         {
             if (viewer == null || !IsVisible(viewer) || double.IsNaN(delta) || double.IsInfinity(delta) || Math.Abs(delta) < .01 || viewer.ScrollableHeight <= 0) return false;
@@ -67,6 +88,7 @@ namespace BiliXbox.Controls
             if (!state.Active || !ReferenceEquals(state.List, list) || !SameItems(state))
             {
                 state.Active = true; state.List = list; state.Target = viewer.VerticalOffset; state.HasAnchor = false; state.FocusTarget = null;
+                state.RestoreIndex = -1; state.RestoreAttempts = 0;
                 state.Count = list?.Items.Count ?? 0;
                 state.First = state.Count == 0 ? null : list.Items[0]; state.Last = state.Count == 0 ? null : list.Items[state.Count - 1];
                 CaptureAnchor(state, preferredIndex);
@@ -141,6 +163,25 @@ namespace BiliXbox.Controls
             var viewer = state.Viewer;
             if (!IsVisible(viewer)) return null;
             viewer.UpdateLayout();
+            if (state.RestoreIndex >= 0)
+            {
+                var restored = state.List?.ContainerFromIndex(state.RestoreIndex) as Control;
+                Rect restoredBounds;
+                if (restored != null && TryBounds(restored, viewer, out restoredBounds)
+                    && restoredBounds.Y + restoredBounds.Height > 0
+                    && restoredBounds.Y < (viewer.ViewportHeight > 0 ? viewer.ViewportHeight : viewer.ActualHeight))
+                {
+                    state.AnchorX = restoredBounds.X + restoredBounds.Width / 2;
+                    state.AnchorContentY = restoredBounds.Y + restoredBounds.Height / 2 + viewer.VerticalOffset;
+                    state.HasAnchor = true; state.RestoreIndex = -1;
+                }
+                else if (++state.RestoreAttempts < 3)
+                {
+                    Queue(state);
+                    return new ViewportScrollResult { Offset = viewer.VerticalOffset };
+                }
+                else state.RestoreIndex = -1; // Choose an actually visible row below.
+            }
             var controls = new List<Control>(); var indices = new List<int>(); var candidates = new List<ViewportScrollCandidate>();
             if (state.List != null)
             {
@@ -233,7 +274,10 @@ namespace BiliXbox.Controls
             for (int i = 0; i < count; ++i) Cancel(VisualTreeHelper.GetChild(scope, i));
         }
         private static void Stop(State state)
-        { state.Active = state.Queued = state.HasAnchor = false; state.Callback = null; state.FocusTarget = null; ++state.Generation; }
+        {
+            state.Active = state.Queued = state.HasAnchor = false; state.Callback = null; state.FocusTarget = null;
+            state.RestoreIndex = -1; state.RestoreAttempts = 0; ++state.Generation;
+        }
     }
 
     internal sealed class ViewportScrollCandidate

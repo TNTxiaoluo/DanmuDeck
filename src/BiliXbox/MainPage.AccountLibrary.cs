@@ -43,20 +43,45 @@ namespace BiliXbox
         {
             if (_disposed || _dialogOpen || !_api.IsLoggedIn) return;
             if (_libraryVisible) { AccountLibrary.RestoreFocus(); return; }
-            if (_videoReturnsToLibrary && _libraryReturn != null)
-            { ReturnToAccountLibraryFromVideo(); return; }
-            _libraryReturn = new LibraryReturnState
+            var historyFlush = FlushPlaybackHistoryAsync();
+            bool returning = _videoReturnsToLibrary && _libraryReturn != null;
+            if (returning) ReturnToAccountLibraryFromVideo(false);
+            else
             {
-                CreatorVisible = _creatorVisible, VideoReturnsToCreator = _videoReturnsToCreator,
-                Playback = CapturePlaybackBookmark()
-            };
-            _libraryAccountMid = CurrentAccountMid;
-            ShowAccountLibrarySurface();
-            try { await AccountLibrary.ShowAsync(_api.CurrentUser); }
-            catch (Exception ex) { if (!_disposed && _libraryVisible) SetStatus("个人中心未能打开：" + Friendly(ex)); }
+                _libraryReturn = new LibraryReturnState
+                {
+                    CreatorVisible = _creatorVisible, VideoReturnsToCreator = _videoReturnsToCreator,
+                    Playback = CapturePlaybackBookmark()
+                };
+                _libraryAccountMid = CurrentAccountMid;
+                ShowAccountLibrarySurface(false);
+            }
+            var owner = _libraryReturn;
+            long accountMid = _libraryAccountMid;
+            AccountLibrary.IsEnabled = false;
+            try
+            {
+                // Show the surface immediately, but do not read an empty cached
+                // history before the last watched position has been submitted.
+                await historyFlush;
+                if (_disposed || !_libraryVisible || !ReferenceEquals(owner, _libraryReturn)
+                    || accountMid != CurrentAccountMid) return;
+                AccountLibrary.IsEnabled = true;
+                if (returning) AccountLibrary.RestoreFocus();
+                else await AccountLibrary.ShowAsync(_api.CurrentUser);
+            }
+            catch (Exception ex)
+            {
+                if (!_disposed && _libraryVisible && ReferenceEquals(owner, _libraryReturn)
+                    && accountMid == CurrentAccountMid) SetStatus("个人中心未能打开：" + Friendly(ex));
+            }
+            finally
+            {
+                if (!_disposed && ReferenceEquals(owner, _libraryReturn)) AccountLibrary.IsEnabled = true;
+            }
         }
 
-        private void ShowAccountLibrarySurface()
+        private void ShowAccountLibrarySurface(bool restoreFocus = true)
         {
             CancelManualGamepadScroll();
             StopSectionMotion();
@@ -73,7 +98,7 @@ namespace BiliXbox
             GamepadFocusOutline.Visibility = Visibility.Collapsed;
             AccountLibrary.Visibility = Visibility.Visible;
             DisablePointerCursor();
-            AccountLibrary.RestoreFocus();
+            if (restoreFocus) AccountLibrary.RestoreFocus();
         }
 
         private async Task OpenLibraryItemAsync(AccountLibraryItem item)
@@ -95,13 +120,13 @@ namespace BiliXbox
             await OpenVideoAsync(item.Bvid, item.Title, bookmark);
         }
 
-        private void ReturnToAccountLibraryFromVideo()
+        private void ReturnToAccountLibraryFromVideo(bool restoreFocus = true)
         {
             _videoReturnsToLibrary = false;
             GoHome();
             if (!_api.IsLoggedIn || CurrentAccountMid != _libraryAccountMid)
             { ClearAccountLibraryNavigation(true); return; }
-            ShowAccountLibrarySurface();
+            ShowAccountLibrarySurface(restoreFocus);
         }
 
         private async Task CloseAccountLibraryAsync()
@@ -138,6 +163,7 @@ namespace BiliXbox
 
         private void ClearAccountLibraryNavigation(bool clearAccount = false)
         {
+            AccountLibrary.IsEnabled = true;
             _libraryVisible = _videoReturnsToLibrary = false;
             _libraryReturn = null;
             AccountLibrary.StopRequests();
@@ -172,10 +198,10 @@ namespace BiliXbox
             finally { _activeGeneralDialog = null; _dialogOpen = false; RestoreNavigationFocus(); }
         }
 
-        private Task<PlaybackInfo> GetCurrentPlaybackAsync(VideoDetail video, int quality, CancellationToken token)
+        private Task<PlaybackInfo> GetCurrentPlaybackAsync(VideoDetail video, int quality, CancellationToken token, PlaybackAudioMode? audioMode = null)
             => _playingEpisodeItem?.EpisodeId > 0
-                ? _api.GetEpisodePlaybackAsync(_playingEpisodeItem.EpisodeId, quality, token)
-                : _api.GetPlaybackAsync(video, quality, token);
+                ? _api.GetEpisodePlaybackAsync(_playingEpisodeItem.EpisodeId, quality, token, audioMode ?? _preferredAudioMode)
+                : _api.GetPlaybackAsync(video, quality, token, audioMode ?? _preferredAudioMode);
 
         private static VideoDetail EpisodeVideoDetail(AccountLibraryItem item)
         {

@@ -51,6 +51,8 @@ $arguments += Join-Path $repoRoot 'tools\tests\DashTransportRuntime.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\AdaptivePlaybackSource.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DashRoutePolicy.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DownloadSpeedMeter.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\PlaybackFrameRatePolicy.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\PlaybackOutputSizePolicy.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\PlaybackCodecSupport.cs'
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw "Runtime probe compilation failed: $LASTEXITCODE" }

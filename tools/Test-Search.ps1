@@ -27,7 +27,7 @@ $taskFiles = @(
     'src\BiliXbox\Services\BilibiliClient.Danmaku.cs'
     'src\BiliXbox\Services\WebsiteSearchParser.cs'
     'src\BiliXbox\Services\DashManifestBuilder.cs'
-    'src\BiliXbox\Services\PlaybackCodecSupport.cs'
+    'src\BiliXbox\Services\PlaybackFrameRatePolicy.cs', 'src\BiliXbox\Services\PlaybackOutputSizePolicy.cs', 'src\BiliXbox\Services\PlaybackCodecSupport.cs'
 )
 $taskSource = @'
 using System;

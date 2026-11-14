@@ -15,6 +15,9 @@ jobs:
       - name: Validate source structure
         shell: pwsh
         run: ./tools/Check-Source.ps1
+      - name: Test release channels and numeric upgrade versions
+        shell: pwsh
+        run: ./tools/Test-ReleaseVersion.ps1
       - name: Test application navigation startup
         shell: pwsh
         run: ./tools/Test-AppNavigation.ps1
@@ -30,6 +33,9 @@ jobs:
       - name: Test personal library return navigation and account changes
         shell: pwsh
         run: ./tools/Test-AccountNavigation.ps1
+      - name: Test real playback progress and account-scoped history submission
+        shell: pwsh
+        run: ./tools/Test-PlaybackHistory.ps1
       - name: Test comment viewport clipping
         shell: pwsh
         run: ./tools/Test-CommentNavigation.ps1
@@ -57,6 +63,36 @@ jobs:
       - name: Test quality selection and stream variants
         shell: pwsh
         run: ./tools/Test-PlaybackQuality.ps1
+      - name: Test Probably and independent SDR HDR capability queries
+        shell: pwsh
+        run: ./tools/Test-PlaybackCapability.ps1
+      - name: Test same-tier HEVC alternatives and track diagnostics
+        shell: pwsh
+        run: ./tools/Test-MultiTrackPlayback.ps1
+      - name: Test real HDR10 source with separate SDR output
+        shell: pwsh
+        run: ./tools/Test-ToneMappedPlayback.ps1
+      - name: Test native frame rate validation and stale source ownership
+        shell: pwsh
+        run: ./tools/Test-NativeFrameRateValidation.ps1
+      - name: Test quality entitlement badges
+        shell: pwsh
+        run: ./tools/Test-QualityEntitlements.ps1
+      - name: Test authorized Dolby audio tracks and fallback
+        shell: pwsh
+        run: ./tools/Test-PlaybackAudio.ps1
+      - name: Test audio selection ownership and focus
+        shell: pwsh
+        run: ./tools/Test-PlaybackAudioUi.ps1
+      - name: Test three-second playable buffering policy
+        shell: pwsh
+        run: ./tools/Test-PlaybackBuffering.ps1
+      - name: Test buffer and recovery integration
+        shell: pwsh
+        run: ./tools/Test-PlaybackTransportIntegration.ps1
+      - name: Test bounded local playback diagnostics
+        shell: pwsh
+        run: ./tools/Test-PlaybackDiagnostics.ps1
       - name: Test authorized DASH backup routing
         shell: pwsh
         run: ./tools/Test-DashRoutes.ps1
@@ -96,6 +132,12 @@ jobs:
       - name: Test feed replacement and first-result focus
         shell: pwsh
         run: ./tools/Test-HomeFeedFocus.ps1
+      - name: Test per-section page cache and account isolation
+        shell: pwsh
+        run: ./tools/Test-HomeFeedCache.ps1
+      - name: Test section switching and cached viewport restoration
+        shell: pwsh
+        run: ./tools/Test-LiveNavigation.ps1
       - name: Test focus scale and wide-card expansion bounds
         shell: pwsh
         run: ./tools/Test-TvFocusGeometry.ps1

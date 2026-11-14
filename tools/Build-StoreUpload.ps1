@@ -7,7 +7,7 @@ param(
     [string]$PublisherDisplayName,
     [string]$StoreAssociationPath,
     [switch]$DevelopmentIdentityDraft,
-    [string]$Version = '1.0.1.0',
+    [string]$Version = '1.0.2.0',
     [string]$DisplayName = '弹幕舱',
     [string]$MSBuildPath,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\StoreUpload'),
@@ -126,6 +126,15 @@ $manifest.Package.Properties.DisplayName = $DisplayName
 $manifest.Package.Properties.PublisherDisplayName = $PublisherDisplayName
 foreach ($node in $manifest.SelectNodes('//*[local-name()="VisualElements"]')) { $node.SetAttribute('DisplayName', $DisplayName) }
 $manifest.Save((Join-Path $snapshotProject 'Package.appxmanifest'))
+$versionInfoPath = Join-Path $snapshotProject 'Services\AppVersionInfo.cs'
+$versionInfo = [IO.File]::ReadAllText($versionInfoPath)
+if ([regex]::Matches($versionInfo, 'internal const bool IsTestBuild = (?:true|false);').Count -ne 1 -or
+    [regex]::Matches($versionInfo, 'internal const string ReleaseVersionOverride = "[^"]*";').Count -ne 1) {
+    throw 'The centralized version-info constants are missing or ambiguous.'
+}
+$versionInfo = [regex]::Replace($versionInfo, 'internal const bool IsTestBuild = (?:true|false);', 'internal const bool IsTestBuild = false;')
+$versionInfo = [regex]::Replace($versionInfo, 'internal const string ReleaseVersionOverride = "[^"]*";', 'internal const string ReleaseVersionOverride = "";')
+[IO.File]::WriteAllText($versionInfoPath, $versionInfo, [Text.UTF8Encoding]::new($false))
 
 if (-not $MSBuildPath) {
     $local = Join-Path $workspace '.tools\vs2022\MSBuild\Current\Bin\MSBuild.exe'
@@ -157,6 +166,8 @@ $plan = [ordered]@{
     SubmissionStatus = $(if ($DevelopmentIdentityDraft) { 'DEVELOPMENT IDENTITY DRAFT - DO NOT SUBMIT' } else { 'Assigned identity supplied; local validation and Partner Center certification still required' })
     Signing = 'Unsigned Store upload; Microsoft Store re-signs after certification. Development certificate untouched.'
     AutomaticSubmission = $false; SourceDirectory = $snapshotProject; PackageOutput = $packages
+    DisplayVersion = ('{0}.{1}.{2}' -f $quad.Major, $quad.Minor, $quad.Build); IsTestBuild = $false
+    VersionInfoOverlay = [pscustomobject]@{ Path = 'Services/AppVersionInfo.cs'; Sha256 = (Get-FileHash -LiteralPath $versionInfoPath -Algorithm SHA256).Hash }
     MSBuildPath = $MSBuildPath; MSBuildArguments = $arguments; SourceSnapshot = $copiedSources
 }
 $planPath = Join-Path $runDirectory 'store-build-plan.json'

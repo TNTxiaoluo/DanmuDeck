@@ -25,5 +25,9 @@ foreach ($taskFile in @('src\BiliXbox\Controls\GamepadAuxiliaryState.cs', 'src\B
     $taskText = [IO.File]::ReadAllText((Join-Path $taskRoot $taskFile))
     $taskSource += [Environment]::NewLine + [regex]::Replace($taskText, '(?m)^using [^;]+;\r?\n', '')
 }
+$taskPageSource = [IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/MainPage.xaml.cs'))
+$taskMatch = [regex]::Match($taskPageSource, '(?s)        private void Skip\(double seconds\)\s*\{.*?\r?\n        \}')
+if (-not $taskMatch.Success) { throw 'Production Skip method missing.' }
+$taskSource = $taskSource.Replace('/* PRODUCTION_SKIP */', $taskMatch.Value)
 Add-Type -TypeDefinition $taskSource -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414'
 [BiliXbox.MainPage]::RunExtrasTests()

@@ -63,6 +63,7 @@ namespace BiliXbox
         private int _gamepadHomeIndex = 1, _gamepadNavigationIndex = 2;
         private object _gamepadHomeItem;
         private Control _selectedGamepadControl;
+        private Control _commentActionCard, _commentActionReturn;
         private ListViewBase _gamepadNavigationList;
         private ListViewBase HomeResultGrid = new ListViewBase();
         private readonly ListViewBase ReplyList = new ListViewBase(), CommentList = new ListViewBase();
@@ -71,14 +72,41 @@ namespace BiliXbox
         private int _homeFocusCancelled, _listFocusCancelled, _remembered;
         private Control _rememberedControl;
         private string _status;
+        private sealed class ExtraMedia
+        {
+            public object Source = new object();
+            public ExtraSession PlaybackSession = new ExtraSession();
+        }
+        private sealed class ExtraSession
+        {
+            public bool CanSeek = true;
+            public TimeSpan Position = TimeSpan.FromSeconds(30), NaturalDuration = TimeSpan.FromSeconds(100);
+        }
+        private readonly ExtraMedia _media = new ExtraMedia();
+        private bool _wantsPlayback, _resumeAfterOpen;
+        private int _controlsShown;
+        private int _bufferInvalidations;
+        private void InvalidatePlaybackBuffering() { ++_bufferInvalidations; }
+        private void ShowControls() { ++_controlsShown; }
+        /* PRODUCTION_SKIP */
         private readonly List<HomeSection> _sections = new List<HomeSection>();
+        private readonly List<Task> _sectionTransitions = new List<Task>();
         private Task _sectionLoad = Task.CompletedTask;
-        private async Task SelectSectionAsync(HomeSection section)
+        private Task SelectSectionAsync(HomeSection section)
         {
             // The real section loader owns its pending target before awaiting
             // transition/loading; this substitute exposes that external await.
             _sections.Add(section); _pendingSection = section;
-            await _sectionLoad;
+            var transition = CompleteSectionLoadAsync(section, _sectionLoad);
+            _sectionTransitions.Add(transition);
+            return transition;
+        }
+        private async Task CompleteSectionLoadAsync(HomeSection section, Task load)
+        {
+            // This fixture has no native dispatcher. Do not rely on SetResult
+            // running every continuation inline, or on the test caller pumping
+            // an ambient PowerShell synchronization context.
+            await load.ConfigureAwait(false);
             if (_pendingSection == section) { _feedNavigation.SelectSection(section); _pendingSection = null; }
         }
         private static string Friendly(Exception error) => error.Message;
@@ -86,6 +114,7 @@ namespace BiliXbox
         private void CancelGamepadHomeFocus() { ++_homeFocusCancelled; }
         private void CancelGamepadListFocus() { ++_listFocusCancelled; }
         private void RememberCommentComposerPosition(Control control) { ++_remembered; _rememberedControl = control; }
+        private bool ScrollReplyThread(double delta) => ViewportFocusScroll.Scroll(ReplyList, delta);
         private T FindGamepadChild<T>(DependencyObject root) where T : DependencyObject
             => (ReferenceEquals(root, SettingsSide) ? _settingsScroll : _danmakuScroll) as T;
 
@@ -120,6 +149,8 @@ namespace BiliXbox
             page.StepHomeSection(1); Check(page._sections.Count == 3, "Pending rightmost section also clamps while transition awaits");
             page.StepHomeSection(-1); Check(page._sections[3] == HomeSection.Animation, "Opposite bumper reverses from pending target");
             wait.SetResult(true);
+            Check(Task.WhenAll(page._sectionTransitions).Wait(TimeSpan.FromSeconds(5)),
+                "Every queued external section transition completes before inspecting final navigation state");
             Check(page._feedNavigation.Section == HomeSection.Animation, "Latest pending section wins when external transition completes");
             foreach (Action<MainPage> guard in new Action<MainPage>[] {
                 p => p._watching = true, p => p._creatorVisible = true, p => p._libraryVisible = true,
@@ -162,6 +193,56 @@ namespace BiliXbox
             int samples = ViewportFocusScroll.Requests.Count;
             page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(165); page.PollAuxiliaryGamepad(new GamepadReading { Buttons = GamepadButtons.LeftShoulder, RightThumbstickY = -1 }, false);
             Check(ViewportFocusScroll.Requests.Count == samples && page._sections.Count == 1, "Disabled raw sampling cannot scroll or change sections");
+
+            foreach (bool playing in new[] { false, true })
+            {
+                page = Fresh(); page._watching = true;
+                page._wantsPlayback = page._resumeAfterOpen = playing;
+                page.PollAuxiliaryGamepad(new GamepadReading(), true);
+                page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(33);
+                page.PollAuxiliaryGamepad(new GamepadReading { Buttons = GamepadButtons.RightShoulder }, true);
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(35) && page._controlsShown == 1,
+                    "Raw RB seeks exactly five seconds while playing or paused");
+                Check(page._bufferInvalidations == 1, "shoulder seek invalidates cached ranges before changing position");
+                page.RawGamepadOwnsNavigation = true;
+                Check(page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadRightShoulder, false), "Mapped raw-owned bumper is consumed");
+                for (int frame = 2; frame < 30; ++frame)
+                {
+                    page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(frame * 33);
+                    page.PollAuxiliaryGamepad(new GamepadReading { Buttons = GamepadButtons.RightShoulder }, true);
+                    page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadRightShoulder, true);
+                }
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(35) && page._controlsShown == 1,
+                    "Held raw bumper and mapped aliases cannot multiply one seek edge");
+                page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(1000);
+                page.PollAuxiliaryGamepad(new GamepadReading(), true);
+                page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(1033);
+                page.PollAuxiliaryGamepad(new GamepadReading { Buttons = GamepadButtons.LeftShoulder }, true);
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(30), "Released raw LB seeks back exactly five seconds");
+                Check(page._wantsPlayback == playing && page._resumeAfterOpen == playing && page._sections.Count == 0,
+                    "Shoulder seeks preserve playing intent and never change home sections in player");
+                page.RawGamepadOwnsNavigation = false;
+                page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, false);
+                page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, true);
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(25), "Virtual LB fallback seeks once and ignores autorepeat");
+                page._media.PlaybackSession.Position = TimeSpan.FromSeconds(2);
+                page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, false);
+                Check(page._media.PlaybackSession.Position == TimeSpan.Zero, "Five-second reverse seek clamps at video start");
+                page._media.PlaybackSession.Position = TimeSpan.FromSeconds(99);
+                page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadRightShoulder, false);
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(100), "Five-second forward seek clamps at video end");
+            }
+            foreach (Action<MainPage> guard in new Action<MainPage>[] {
+                p => p._creatorVisible = true, p => p._libraryVisible = true, p => p._liveVisible = true,
+                p => p._dialogOpen = true, p => p._inputPaneVisible = true, p => p._disposed = true,
+                p => p.IsNativeGamepadEditorActive = true,
+                p => p._playerUi.Open(PlayerDrawer.Comments, DateTimeOffset.UtcNow),
+                p => p._playerUi.Open(PlayerDrawer.Settings, DateTimeOffset.UtcNow) })
+            {
+                page = Fresh(); page._watching = true; guard(page);
+                page.SeekVideoShoulder(1);
+                Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(30), "Foreground nested view/editor/drawer ownership blocks video bumper seek");
+            }
 
             page = Fresh(); Check(page.ScrollGamepadSurface(55), "Home viewport accepts scrolling");
             var request = LastRequest;

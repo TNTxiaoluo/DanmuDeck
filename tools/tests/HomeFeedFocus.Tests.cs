@@ -37,6 +37,15 @@ namespace BiliXbox.HomeFeedFocusTests
         private int _gamepadHomeIndex, _gamepadHomeFocusGeneration;
         private object _gamepadHomeItem;
         private Control _selectedGamepadControl;
+        private Control _homeFeedFocusAnchor;
+        private object _pendingHomeFeedPosition;
+        private int _cachedFocusIndex = -1;
+        private bool RestoreHomeFeedPageFocus()
+        {
+            if (_cachedFocusIndex < 0 || _dialogOpen || _inputPaneVisible || _libraryVisible || _creatorVisible || _watching || _liveVisible) return false;
+            int index = _cachedFocusIndex; _cachedFocusIndex = -1;
+            _gamepadHomeInitialFocusDone = true; FocusGamepadHomeVideo(index); return true;
+        }
         private readonly Grid VideoGrid = new Grid();
         private readonly Grid UserGrid = new Grid();
         private Grid HomeResultGrid => UserGrid.Visibility == Visibility.Visible ? UserGrid : VideoGrid;
@@ -126,6 +135,22 @@ namespace BiliXbox.HomeFeedFocusTests
                 }
             }
             // A user may open a native keyboard while the request is in flight.
+            var cached = new MainPage(); cached.Fill(20); cached._homeFeedFocusAnchor = cached.HomeButton;
+            cached.BeginHomeFeedReplacement();
+            Check(FocusManager.Current == cached.HomeButton, "Tab replacement keeps focus on its tab instead of flashing the search box.");
+            cached._cachedFocusIndex = 11; cached.CompleteHomeFeedReplacement();
+            Check(cached._lastFocusedIndex == 11 && cached._gamepadHomeInitialFocusDone && cached._homeFeedFocusAnchor == null,
+                "A cached page restores its selected card rather than replacing it with card zero.");
+            var deferred = new MainPage(); deferred.Fill(20); deferred.BeginHomeFeedReplacement();
+            deferred._cachedFocusIndex = 13; deferred._dialogOpen = true; deferred.CompleteHomeFeedReplacement();
+            Check(deferred._videoFocusCalls == 0 && deferred._cachedFocusIndex == 13, "A cached bookmark waits until native modal input closes.");
+            deferred._dialogOpen = false; deferred.RestoreHomeGamepadFocus();
+            Check(deferred._lastFocusedIndex == 13 && deferred._cachedFocusIndex == -1, "Deferred cached focus takes priority over first-card initialization.");
+            var moved = new MainPage(); moved.Fill(20); moved._homeFeedFocusAnchor = moved.HomeButton; moved.BeginHomeFeedReplacement();
+            moved._pendingHomeFeedPosition = new object();
+            moved.NavigateGamepadHome(PlayerDirection.Right); moved.CompleteHomeFeedReplacement();
+            Check(moved._videoFocusCalls == 0 && FocusManager.Current == moved.HomeButton && moved._pendingHomeFeedPosition == null,
+                "Feed completion preserves a deliberate direction move made while a slow tab was loading.");
             var modal = new MainPage(); modal.Fill(20); modal.BeginHomeFeedReplacement();
             modal._dialogOpen = true; modal.CompleteHomeFeedReplacement();
             Check(modal._videoFocusCalls == 0 && !modal._gamepadHomeInitialFocusDone, "Completion must not steal native modal focus.");

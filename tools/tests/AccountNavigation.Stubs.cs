@@ -10,6 +10,7 @@ namespace Windows.UI.Xaml
     }
     public class FrameworkElement
     {
+        public bool IsEnabled { get; set; } = true;
         public Visibility Visibility { get; set; } = Visibility.Visible;
         public Thickness Padding { get; set; }
     }
@@ -94,12 +95,12 @@ namespace BiliXbox.Services
             CurrentUser = null;
             return Task.CompletedTask;
         }
-        public Task<PlaybackInfo> GetEpisodePlaybackAsync(long episode, int quality, CancellationToken token)
+        public Task<PlaybackInfo> GetEpisodePlaybackAsync(long episode, int quality, CancellationToken token, PlaybackAudioMode audioMode = PlaybackAudioMode.Standard)
         {
             ++PgcCount; LastEpisodeId = episode; LastQuality = quality; LastToken = token;
             return Task.FromResult(new PlaybackInfo { QualityId = quality });
         }
-        public Task<PlaybackInfo> GetPlaybackAsync(VideoDetail video, int quality, CancellationToken token)
+        public Task<PlaybackInfo> GetPlaybackAsync(VideoDetail video, int quality, CancellationToken token, PlaybackAudioMode audioMode = PlaybackAudioMode.Standard)
         {
             ++UgcCount; LastVideo = video; LastQuality = quality; LastToken = token;
             return Task.FromResult(new PlaybackInfo { QualityId = quality });
@@ -185,6 +186,9 @@ namespace BiliXbox
         private Task RefreshHomeForAccountAsync() { ++HomeRefreshCount; return Task.CompletedTask; }
         private Task PlayWithDisplayAsync() { _media.Play(); return Task.CompletedTask; }
         private Task ResetPlaybackDisplayAsync() { return Task.CompletedTask; }
+        private PlaybackAudioMode _preferredAudioMode = PlaybackAudioMode.Standard;
+        public Task HistoryFlush = Task.CompletedTask;
+        private Task FlushPlaybackHistoryAsync() { return HistoryFlush; }
         private void DisablePointerCursor() { ++PointerDisableCount; }
         private void UpdatePlaybackUi() { ++PlaybackUiCount; }
         private void ShowControls() { ++ShowControlsCount; }

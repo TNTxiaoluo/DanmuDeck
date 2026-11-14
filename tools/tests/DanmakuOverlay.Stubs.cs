@@ -107,6 +107,8 @@ namespace Windows.UI.Xaml.Controls
 
         public static void SetLeft(TextBlock block, double left) { block.LayoutLeft = left; block.LeftLayoutWrites++; }
         public static void SetTop(TextBlock block, double top) { block.Top = top; }
+        public static void SetZIndex(TextBlock block, int value) { block.ZIndex = value; }
+        public static int GetZIndex(TextBlock block) { return block.ZIndex; }
 
         public void SetViewport(double width, double height)
         {
@@ -153,6 +155,7 @@ namespace Windows.UI.Xaml.Controls
             }
         }
         public double Top { get; set; }
+        public int ZIndex { get; set; }
 
         public void Measure(Windows.Foundation.Size availableSize)
         {

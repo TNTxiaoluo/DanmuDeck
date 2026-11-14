@@ -181,6 +181,14 @@ namespace BiliXbox.Controls
                     state.NeedsRefresh = true;
         }
 
+        public void InvalidateHistoryContent()
+        {
+            // A successful heartbeat changes the cloud history, including a
+            // previously empty list retained behind the player.
+            foreach (var state in _trail.Concat(new[] { _state }))
+                if (state.Pane == LibraryPane.History) state.NeedsRefresh = true;
+        }
+
         private bool HasAccount => _accountMid > 0 && _api?.IsLoggedIn == true && _api.CurrentUser?.Mid == _accountMid;
         private ListViewBase ActiveList => _state.Pane == LibraryPane.Folders ? (ListViewBase)_folderGrid : _videoGrid;
         private AccountLibraryPage CurrentPage => _state.PageIndex >= 0 && _state.PageIndex < _state.Pages.Count ? _state.Pages[_state.PageIndex] : null;

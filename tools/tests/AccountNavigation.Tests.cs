@@ -18,7 +18,13 @@ namespace BiliXbox.AccountNavigationTests
         { target.GetType().GetField(name, PrivateInstance | BindingFlags.Public).SetValue(target, value); }
         private static object Invoke(object target, string name, params object[] args)
         {
-            try { return target.GetType().GetMethod(name, PrivateInstance | BindingFlags.Static).Invoke(target, args); }
+            try
+            {
+                var method = target.GetType().GetMethod(name, PrivateInstance | BindingFlags.Static);
+                var parameters = method.GetParameters();
+                var supplied = parameters.Select((parameter, index) => index < args.Length ? args[index] : parameter.DefaultValue).ToArray();
+                return method.Invoke(target, supplied);
+            }
             catch (TargetInvocationException error) { throw error.InnerException; }
         }
         private static Task Call(MainPage page, string name, params object[] args) => (Task)Invoke(page, name, args);
@@ -165,6 +171,20 @@ namespace BiliXbox.AccountNavigationTests
             int showBefore = View(page).ShowCount, focusBefore = View(page).FocusCount;
             await Call(page, "ShowAccountLibraryAsync");
             Check(View(page).ShowCount == showBefore && View(page).FocusCount == focusBefore + 1, "reenter existing library only restores focus and preserves origin state");
+            var waiting = new MainPage();
+            var checkpoint = new TaskCompletionSource<bool>(); waiting.HistoryFlush = checkpoint.Task;
+            var opening = Call(waiting, "ShowAccountLibraryAsync");
+            Check(Field<bool>(waiting, "_libraryVisible") && !View(waiting).IsEnabled && View(waiting).ShowCount == 0,
+                "library surface opens immediately but waits for checkpoint before loading account content");
+            await Call(waiting, "CloseAccountLibraryAsync");
+            checkpoint.SetResult(true); await opening;
+            Check(!Field<bool>(waiting, "_libraryVisible") && View(waiting).ShowCount == 0 && View(waiting).IsEnabled,
+                "B during history flush stays closed and old completion cannot reopen library");
+            waiting = new MainPage(); checkpoint = new TaskCompletionSource<bool>(); waiting.HistoryFlush = checkpoint.Task;
+            opening = Call(waiting, "ShowAccountLibraryAsync");
+            Api(waiting).CurrentUser = new UserProfile { Mid = 99, Name = "different fixture account" };
+            checkpoint.SetResult(true); await opening;
+            Check(View(waiting).ShowCount == 0, "account changes during checkpoint wait cannot show previous account history");
             var unavailable = Item(); unavailable.IsPlayable = false; unavailable.UnavailableReason = "fixture unavailable";
             int stopBefore = View(page).StopCount; await Call(page, "OpenLibraryItemAsync", unavailable);
             Check(page.Navigations.Count == 0 && View(page).StopCount == stopBefore && page.Status == "fixture unavailable", "unavailable item keeps library visible and explains failure without navigation");

@@ -6,6 +6,7 @@ $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskSource = @'
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +17,7 @@ using Windows.UI.Xaml;
 '@ + [Environment]::NewLine
 foreach ($taskFile in @('src\BiliXbox\Models\ApiModels.cs', 'src\BiliXbox\Services\DownloadSpeedMeter.cs',
     'src\BiliXbox\Controls\PlaybackRecoveryState.cs', 'src\BiliXbox\Controls\PlaybackPipelineRecoveryState.cs',
+    'src\BiliXbox\Services\PlaybackBufferingPolicy.cs',
     'src\BiliXbox\MainPage.PlaybackTransport.cs', 'tools\tests\PlaybackTransportIntegration.Tests.cs')) {
     $taskSource += [regex]::Replace([IO.File]::ReadAllText((Join-Path $taskRoot $taskFile)), '(?m)^using [^;]+;\r?\n', '') + [Environment]::NewLine
 }

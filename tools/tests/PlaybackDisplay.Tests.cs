@@ -98,6 +98,9 @@ namespace BiliXbox.PlaybackDisplayTests
             await OrdinaryDesktopAndUnavailable();
             await ModeSelection();
             await Dashboard1080ToSdr4K();
+            await Dci4KOutput();
+            await ToneMappedSdrOutput();
+            await NearSixtyFrameRateValidation();
             await IndependentCapabilityAndLegacyDescriptors();
             await InvalidArgumentAndAlternateCandidates();
             await PostRequestModeVerification();
@@ -107,6 +110,134 @@ namespace BiliXbox.PlaybackDisplayTests
             await FalseAndCleanup();
             await CancellationAndSerialization();
             return "PASS: " + _checks + " production HDMI selection, HDR/SDR, no120Hz, cancellation and reset ownership assertions (test platform, no device mode changes).";
+        }
+        private static async Task NearSixtyFrameRateValidation()
+        {
+            var device = Device(Mode());
+            var controller = new Services.PlaybackDisplayController();
+            var reported = Stream(fps:62.5);
+            Check(!await controller.PrepareAsync(reported,CancellationToken.None) && device.Requests == 0,
+                "near60 metadata without explicit baseline/native-validation flags is not silently accepted");
+            reported.VideoFrameRateProbe=60; reported.RequiresNativeFrameRateValidation=true;
+            Check(await controller.PrepareAsync(reported,CancellationToken.None) && controller.FourKActive
+                && reported.VideoFrameRate == 62.5 && reported.VideoFrameRateProbe == 60,
+                "documented60Hz output is prepared independently while retaining the reported62.5fps");
+            await controller.ResetAsync();
+            var invalid = Stream(fps:120);
+            Check(!await controller.PrepareAsync(invalid,CancellationToken.None), "unflagged120 metadata cannot silently authorize native compatibility trial");
+            invalid.VideoFrameRateProbe=60; invalid.RequiresNativeFrameRateValidation=true;
+            Check(await controller.PrepareAsync(invalid,CancellationToken.None) && invalid.VideoFrameRate==120
+                && device.RequestedMode.RefreshRate==60 && !controller.Hdr10Active,
+                "explicit120 metadata trial can use confirmed60Hz output without claiming120Hz output or changing raw rate");
+            await controller.ResetAsync();
+            invalid.VideoFrameRate=240;
+            Check(!await controller.PrepareAsync(invalid,CancellationToken.None), "trial flags cannot exceed the bounded120fps compatibility path");
+            var mismatched = Stream(fps:62.5); mismatched.VideoFrameRateProbe=62.5; mismatched.RequiresNativeFrameRateValidation=true;
+            Check(!await controller.PrepareAsync(mismatched,CancellationToken.None), "unbounded raw value cannot masquerade as a documented baseline probe");
+            var hdr = Stream(fps:62.5,hdr:true); hdr.VideoFrameRateProbe=60; hdr.RequiresNativeFrameRateValidation=true;
+            device = Device(Mode()); controller = new Services.PlaybackDisplayController();
+            Check(!await controller.PrepareAsync(hdr,CancellationToken.None), "near60 baseline does not turn an SDR display into HDR10 support");
+            device = Device(Mode(hdr:true)); controller = new Services.PlaybackDisplayController();
+            Check(await controller.PrepareAsync(hdr,CancellationToken.None) && controller.Hdr10Active,
+                "confirmed HDR10 mode is independently selectable at the60Hz trial baseline");
+            await controller.ResetAsync();
+        }
+        private static async Task Dci4KOutput()
+        {
+            var uhd = Mode();
+            var device = Device(Mode(1920,1080),uhd);
+            var controller = new Services.PlaybackDisplayController();
+            foreach (int sourceWidth in new[] { 3996,4096 })
+            {
+                var source = Stream(sourceWidth,2160,25);
+                Check(await controller.PrepareAsync(source,CancellationToken.None)
+                    && device.RequestedMode==uhd && controller.FourKActive && !controller.Hdr10Active,
+                    "DCI-width source prepares a real3840x2160 SDR HDMI mode: "+sourceWidth);
+                Check(source.VideoWidth==sourceWidth && source.VideoHeight==2160,
+                    "output fit never rewrites the actual encoded frame dimensions");
+                await controller.ResetAsync();
+            }
+            Check(await controller.PrepareAsync(Stream(2160,3996,25),CancellationToken.None),
+                "portrait DCI source uses bounded landscape output normalization");
+            await controller.ResetAsync();
+            int requests = device.Requests;
+            Check(!await controller.PrepareAsync(Stream(7680,4320,25),CancellationToken.None)
+                && device.Requests==requests, "8K source cannot silently use the DCI UHD exception");
+            Check(!await controller.PrepareAsync(Stream(4097,2160,25),CancellationToken.None)
+                && device.Requests==requests, "source wider than DCI4K cannot silently use UHD output proof");
+            Check(!await controller.PrepareAsync(Stream(4096,2304,25),CancellationToken.None)
+                && device.Requests==requests, "source taller than2160 cannot silently use UHD output proof");
+            Check(!await controller.PrepareAsync(Stream(3996,2160,25,true),CancellationToken.None),
+                "DCI size mapping keeps HDR10 separate from SDR-only HDMI support");
+            device = Device(Mode(hdr:true)); controller = new Services.PlaybackDisplayController();
+            var hdr = Stream(3996,2160,25,true);
+            Check(await controller.PrepareAsync(hdr,CancellationToken.None) && controller.Hdr10Active
+                && device.RequestedOption==HdmiDisplayHdrOption.Eotf2084 && hdr.VideoWidth==3996,
+                "DCI HDR10 requests independently confirmed UHD PQ mode without changing source dimensions");
+            await controller.ResetAsync();
+            hdr.FourKDisplayVerified=false;
+            Check(!await controller.PrepareAsync(hdr,CancellationToken.None),
+                "DCI size mapping never bypasses missing decode and display verification");
+        }
+        private static PlaybackInfo ToneMappedSource(int sourceId=125, int width=3840, int height=2160)
+        {
+            var source=Stream(width,height,30,true);
+            source.QualityId=120; source.SourceQualityId=sourceId; source.UsesSdrToneMapping=true;
+            source.VideoBitsPerChannel=10; source.VideoCodec="hvc1.2.4.L153.B0";
+            source.Hdr10DisplayVerified=false; source.DashManifest="original-PQ-BT2020-fixture";
+            return source;
+        }
+        private static async Task ToneMappedSdrOutput()
+        {
+            var uhd=Mode(); var device=Device(Mode(1920,1080),uhd);
+            var controller=new Services.PlaybackDisplayController();
+            var source=ToneMappedSource();
+            Check(await controller.PrepareAsync(source,CancellationToken.None) && controller.FourKActive
+                && !controller.Hdr10Active && device.RequestedMode==uhd
+                && device.RequestedOption==HdmiDisplayHdrOption.EotfSdr,
+                "verified4K HDR10 source can request only SDR HDMI for native tone mapping");
+            Check(source.IsHdr10 && source.SourceQualityId==125 && source.QualityId==120
+                && source.VideoBitsPerChannel==10 && source.DashManifest=="original-PQ-BT2020-fixture"
+                && !source.Hdr10DisplayVerified,
+                "SDR output does not rewrite sourcePQ metadata or claimHDR10 display verification");
+            await controller.ResetAsync();
+            Check(!controller.FourKActive && !controller.Hdr10Active && device.Resets==1,
+                "tone-mapped SDR output retains normal default-display cleanup ownership");
+            Check(await controller.PrepareAsync(ToneMappedSource(120),CancellationToken.None),
+                "actualHDR10 source advertised under120 retains its own raw tier when tone mapped");
+            await controller.ResetAsync();
+            Check(await controller.PrepareAsync(ToneMappedSource(width:3996),CancellationToken.None)
+                && device.RequestedMode==uhd && !controller.Hdr10Active,
+                "tone-mapped DCI source preserves actual decode size while usingUHD SDR output");
+            await controller.ResetAsync();
+            foreach(string invalid in new[]{"source-sdr","wrong-effective-tier","wrong-source-tier","eight-bit","no-sdr-proof","not-four-k","8k","outside-dci"})
+            {
+                device=Device(Mode()); controller=new Services.PlaybackDisplayController(); source=ToneMappedSource();
+                if(invalid=="source-sdr") source.IsHdr10=false;
+                if(invalid=="wrong-effective-tier") source.QualityId=125;
+                if(invalid=="wrong-source-tier") source.SourceQualityId=127;
+                if(invalid=="eight-bit") source.VideoBitsPerChannel=8;
+                if(invalid=="no-sdr-proof") source.FourKDisplayVerified=false;
+                if(invalid=="not-four-k") { source.VideoWidth=1920; source.VideoHeight=1080; }
+                if(invalid=="8k") { source.VideoWidth=7680; source.VideoHeight=4320; }
+                if(invalid=="outside-dci") source.VideoWidth=4097;
+                Check(!await controller.PrepareAsync(source,CancellationToken.None) && device.Requests==0
+                    && !controller.Hdr10Active && !controller.FourKActive && controller.FailureReason.Contains("HDR10→SDR"),
+                    "inconsistent tone-mapped model cannot bypass actualsource/decode/display requirements: "+invalid);
+            }
+            var pq=Mode(hdr:true); pq.IsSdrLuminanceSupported=false;
+            device=Device(pq); controller=new Services.PlaybackDisplayController();
+            Check(!await controller.PrepareAsync(ToneMappedSource(),CancellationToken.None) && device.Requests==0,
+                "PQ-only HDMI descriptor cannot masquerade as the requiredSDR output proof");
+            device=Device(Mode()); controller=new Services.PlaybackDisplayController();
+            var completion=new TaskCompletionSource<bool>(); device.Request=()=>completion.Task;
+            var cancellation=new CancellationTokenSource();
+            var pending=controller.PrepareAsync(ToneMappedSource(),cancellation.Token);
+            cancellation.Cancel(); completion.SetResult(true);
+            try { await pending; throw new Exception("FAIL: tone-mapped native cancellation ignored"); }
+            catch(OperationCanceledException) { Check(device.Resets==1 && !controller.FourKActive && !controller.Hdr10Active,
+                "late successful tone-mapped mode request is restored after cancellation"); }
+            cancellation.Dispose();
         }
         private static async Task OrdinaryDesktopAndUnavailable()
         {

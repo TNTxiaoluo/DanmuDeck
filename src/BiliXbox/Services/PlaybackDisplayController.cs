@@ -47,9 +47,18 @@ namespace BiliXbox.Services
                 // Windows' normal media/display pipeline owns desktop output.
                 // Do not infer that it entered HDR from an Xbox capability flag.
                 if (!IsXbox) return true;
-                bool hdr = playback.IsHdr10;
+                bool hdr = playback.IsHdr10 && !playback.UsesSdrToneMapping;
                 int width = Math.Max(playback.VideoWidth, playback.VideoHeight);
                 int height = Math.Min(playback.VideoWidth, playback.VideoHeight);
+                if (playback.UsesSdrToneMapping && (!playback.IsHdr10 || playback.QualityId != 120
+                    || (playback.SourceQualityId != 120 && playback.SourceQualityId != 125)
+                    || playback.VideoBitsPerChannel != 10 || !playback.FourKDisplayVerified
+                    || width > 4096 || height > 2160 || (width < 3840 && height < 2160)))
+                {
+                    FailureReason = "此 HDR10→SDR 播放源未保留有效的原始 4K/10bit 信息或独立 SDR 能力证明";
+                    await ResetCoreAsync();
+                    return false;
+                }
                 bool highResolution = width > 1920 || height > 1080;
                 if (!hdr && !highResolution)
                 {
@@ -62,9 +71,14 @@ namespace BiliXbox.Services
                     || (requires4K && !playback.FourKDisplayVerified)
                     || width <= 0 || height <= 0)
                 { FailureReason = "此播放源尚未通过所需的解码及显示能力查询"; await ResetCoreAsync(); return false; }
+                int outputWidth, outputHeight;
+                if (!PlaybackOutputSizePolicy.TryGetOutputSize(width, height, out outputWidth, out outputHeight))
+                { FailureReason = "此播放源没有有效的输出尺寸"; await ResetCoreAsync(); return false; }
                 double fps = playback.VideoFrameRate > 0 ? playback.VideoFrameRate : 30;
-                if (double.IsNaN(fps) || double.IsInfinity(fps) || fps > 60.001)
-                { FailureReason = "Xbox 媒体播放不支持此视频帧率"; await ResetCoreAsync(); return false; }
+                double outputRate;
+                if (!PlaybackFrameRatePolicy.TryGetOutputRate(fps, playback.VideoFrameRateProbe,
+                    playback.RequiresNativeFrameRateValidation, out outputRate))
+                { FailureReason = "此视频帧率尚未通过所需的原生验证，不能仅依据接口帧率启用输出"; await ResetCoreAsync(); return false; }
                 if (!ApiInformation.IsTypePresent("Windows.Graphics.Display.Core.HdmiDisplayInformation"))
                 { FailureReason = "系统未提供 HDMI 显示模式接口"; await ResetCoreAsync(); return false; }
                 stage = "取得当前视图的 HDMI 接口";
@@ -80,9 +94,9 @@ namespace BiliXbox.Services
                 {
                     try
                     {
-                        if (mode == null || mode.StereoEnabled || mode.ResolutionWidthInRawPixels < width
-                            || mode.ResolutionHeightInRawPixels < height || mode.RefreshRate <= 0
-                            || mode.RefreshRate > 60.001 || mode.RefreshRate + 0.1 < fps) continue;
+                        if (mode == null || mode.StereoEnabled || mode.ResolutionWidthInRawPixels < outputWidth
+                            || mode.ResolutionHeightInRawPixels < outputHeight || mode.RefreshRate <= 0
+                            || mode.RefreshRate > 60.001 || mode.RefreshRate + 0.1 < outputRate) continue;
                         var candidate = new OutputCandidate(mode);
                         if (hdr ? candidate.Pq : candidate.Sdr || (requires4K
                             && playback.FourKDisplayVerified && candidate.BaselineSdr)) candidates.Add(candidate);

@@ -35,6 +35,20 @@ namespace BiliXbox.PlaybackPipelineRecoveryTests
             state.Reset();
             Check(!Sample(state, 0, buffer: 2) && Sample(state, 12, buffer: 2), "two seconds of playable buffer is sufficient");
             state.Reset();
+            Check(!Sample(state,0,blocked:true,buffer:2.5)
+                && !Sample(state,12,blocked:true,buffer:2.5)
+                && !Sample(state,30,blocked:true,buffer:2.5) && state.Attempts==0,
+                "deliberate app-pause below three-second resume target cannot consume native-rebuild budget");
+            Check(!Sample(state,31,buffer:3) && !Sample(state,42.999,buffer:3)
+                && Sample(state,43,buffer:3) && state.Attempts==1,
+                "hung native resume handoff after intentional wait receives a fresh full decoder-recovery interval");
+            state.ResetWaiting(Start.AddSeconds(44));
+            Check(!Sample(state,44,blocked:true,buffer:2.5)
+                && !Sample(state,70,blocked:true,buffer:2.5)
+                && !Sample(state,71,buffer:3) && !Sample(state,100,buffer:3)
+                && state.Attempts==1,
+                "repeated app-buffer pauses and handoffs cannot replenish consumed native-rebuild budget");
+            state.Reset();
             Sample(state, 0); Sample(state, 11, buffer: 1.9);
             Check(!Sample(state, 12) && !Sample(state, 23.999) && Sample(state, 24), "buffer starvation interrupts continuity");
 

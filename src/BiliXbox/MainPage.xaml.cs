@@ -74,6 +74,8 @@ namespace BiliXbox
         public MainPage()
         {
             InitializeComponent();
+            ReleaseVersionLabel.Text = AppVersionInfo.ApplicationLabel;
+            _api.PlaybackDiagnostic += PlaybackDiagnosticsLog.Record;
             InitializeDanmakuSettings();
             InitializeCreatorHub();
             InitializeAccountLibrary();
@@ -83,6 +85,7 @@ namespace BiliXbox
             _inputPane.Showing += InputPane_Showing;
             _inputPane.Hiding += InputPane_Hiding;
             Player.SetMediaPlayer(_media);
+            _media.AudioCategory = Windows.Media.Playback.MediaPlayerAudioCategory.Movie;
             Loaded += Page_Loaded;
             Unloaded += Page_Unloaded;
             _clock.Tick += Clock_Tick;
@@ -133,10 +136,13 @@ namespace BiliXbox
         private async Task LoadFeedAsync(bool refreshRecommendations = false)
         {
             if (_liveVisible && !_feedNavigation.IsSearch) { await LoadLiveSectionAsync(); return; }
+            CaptureVisibleHomeFeedPosition();
+            EnsureHomeFeedAccount(refreshRecommendations);
             Cancel(ref _feedCts);
             var owner = _feedCts = new CancellationTokenSource();
             var token = owner.Token;
             var request = _feedNavigation.BeginRequest();
+            if (TryRestoreCachedHomeFeed(request)) return;
             SetBusy(true);
             BeginHomeFeedReplacement();
             Videos.Clear();
@@ -184,12 +190,12 @@ namespace BiliXbox
                     var result = await _api.GetRecommendationsAsync(request.Page, refreshRecommendations, token);
                     items = result.Videos; hasMore = result.HasMore; notice = result.Notice;
                     token.ThrowIfCancellationRequested();
-                    if (_feedCts != owner || !_feedNavigation.IsCurrent(request)) return;
+                    if (_feedCts != owner || !_feedNavigation.IsCurrent(request) || accountMid != CurrentAccountMid) return;
                     FeedTitle.Text = result.IsPersonalized ? "为你推荐" : result.IsPopularFallback ? "热门推荐" : "推荐";
                     _loadedFeedAccountMid = accountMid;
                 }
                 token.ThrowIfCancellationRequested();
-                if (_feedCts != owner || !_feedNavigation.IsCurrent(request)) return;
+                if (_feedCts != owner || !_feedNavigation.IsCurrent(request) || accountMid != CurrentAccountMid) return;
                 foreach (var item in items) Videos.Add(item);
                 foreach (var user in users) Users.Add(user);
                 _hasNextFeed = hasMore;
@@ -201,11 +207,12 @@ namespace BiliXbox
                 int count = userMode ? users.Count : items.Count;
                 EmptyState.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 SetStatus(userMode ? "已找到 " + count + " 位用户" + (total > 0 ? " · 共 " + total + " 位" : "") : "已加载 " + count + " 个视频");
+                RememberHomeFeedPage(request, accountMid, items, hasMore, notice);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex)
             {
-                if (!token.IsCancellationRequested && _feedCts == owner && _feedNavigation.IsCurrent(request))
+                if (!token.IsCancellationRequested && _feedCts == owner && _feedNavigation.IsCurrent(request) && accountMid == CurrentAccountMid)
                 {
                     EmptyState.Text = "加载失败\n" + Friendly(ex) + "\n可按下方「刷新」重试。";
                     SetStatus((userMode ? "用户搜索失败：" : "视频加载失败：") + Friendly(ex));
@@ -214,7 +221,7 @@ namespace BiliXbox
             finally
             {
                 SetBusy(false);
-                if (_feedCts == owner && _feedNavigation.IsCurrent(request))
+                if (_feedCts == owner && _feedNavigation.IsCurrent(request) && accountMid == CurrentAccountMid)
                 {
                     PageLabel.Text = "第 " + request.Page + " 页";
                     PreviousPage.IsEnabled = request.Page > 1;
@@ -265,6 +272,7 @@ namespace BiliXbox
 
         private async Task OpenVideoAsync(string bvid, string title = null, CreatorPlaybackBookmark bookmark = null)
         {
+            CaptureVisibleHomeFeedPosition();
             StopSectionMotion();
             CancelManualGamepadScroll();
             HideLiveSection();
@@ -440,21 +448,39 @@ namespace BiliXbox
                 token.ThrowIfCancellationRequested();
                 if (!string.IsNullOrEmpty(playback.DashManifest))
                 {
-                    try { pendingAdaptive = await AdaptivePlaybackSource.OpenAsync(playback.DashManifest,
-                        playback.DashVideoUrls, playback.DashAudioUrls, downloadSpeed, _playbackRouteOffset, token); }
-                    catch (Exception) when (!token.IsCancellationRequested && playback.CodecFallback != null)
+                    var attempted = new HashSet<PlaybackInfo>();
+                    while (true)
                     {
-                        playback = playback.CodecFallback;
-                        playback.QualityNotice = "HEVC 播放源无法打开，已回退到 " + playback.Quality + " H.264 兼容播放。";
-                        playback = await PrepareSourceDisplayAsync(playback, token);
-                        token.ThrowIfCancellationRequested();
-                        await PreparePlaybackRoutesAsync(playback, token);
-                        pendingAdaptive = await AdaptivePlaybackSource.OpenAsync(playback.DashManifest,
-                            playback.DashVideoUrls, playback.DashAudioUrls, downloadSpeed, _playbackRouteOffset, token);
+                        if (attempted.Count >= 16 || !attempted.Add(playback))
+                            throw new InvalidOperationException("兼容播放源已尝试完毕，请选择其他画质。");
+                        try
+                        {
+                            RecordPlaybackTrack("source-open-attempt", playback);
+                            pendingAdaptive = await AdaptivePlaybackSource.OpenAsync(playback.DashManifest,
+                                playback.DashVideoUrls, playback.DashAudioUrls, downloadSpeed, _playbackRouteOffset, token);
+                            break;
+                        }
+                        catch (Exception error) when (!token.IsCancellationRequested && !(error is OutOfMemoryException))
+                        {
+                            var failed = playback;
+                            var fallback = NativePlaybackFallback(failed);
+                            RecordPlaybackTrack("source-open-failed", failed, " hresult=" + error.HResult.ToString("X8"));
+                            if (fallback == null || attempted.Contains(fallback) || attempted.Count >= 16) throw;
+                            playback = fallback;
+                            bool audioFallback = ReferenceEquals(playback, failed.AudioFallback);
+                            failed.AudioFallback = failed.CodecFallback = null;
+                            playback.QualityFailure = PlaybackQualityFailure.PlaybackFailed;
+                            playback.QualityNotice = "原轨道无法打开，正在尝试实际 " + playback.Quality + " 的另一条兼容播放源。";
+                            if (audioFallback) playback.AudioNotice = EnhancedAudioFallbackNotice(failed, true);
+                            playback = await PrepareSourceDisplayAsync(playback, token);
+                            token.ThrowIfCancellationRequested();
+                            await PreparePlaybackRoutesAsync(playback, token);
+                        }
                     }
                     token.ThrowIfCancellationRequested();
                     if (_partCts != owner || generation != _partGeneration || _disposed) return;
                     _adaptivePlayback = pendingAdaptive;
+                    _adaptivePlayback.DownloadDiagnostic += detail => PlaybackDiagnosticsLog.Record("dash generation=" + generation + " " + detail);
                     pendingAdaptive = null;
                     _source = _adaptivePlayback.Source;
                 }
@@ -487,7 +513,7 @@ namespace BiliXbox
                 }
                 _playback = playback;
                 UpdateQualities();
-                _media.Source = _source;
+                _media.Source = CreateFrameRateValidationPlaybackSource(_source, playback, generation);
                 // Start only after MediaOpened applies the previous position and pause state.
                 SetStatus(string.IsNullOrWhiteSpace(playback.QualityNotice) ? "正在连接 · " + playback.Quality : playback.QualityNotice);
             }
@@ -816,6 +842,7 @@ namespace BiliXbox
 
         private void UpdateAccount()
         {
+            AccountPlaybackHistoryChanged();
             if (_libraryAccountMid > 0 && _libraryAccountMid != CurrentAccountMid) ClearAccountLibraryNavigation(true);
             AccountButton.Content = _api.IsLoggedIn ? Shorten(_api.CurrentUser?.Name ?? "我的账号", 10) : "登录";
             WatchAccountButton.Content = AccountButton.Content;
@@ -845,6 +872,9 @@ namespace BiliXbox
 
         private async Task RefreshFeedAsync()
         {
+            CaptureVisibleHomeFeedPosition();
+            EnsureHomeFeedAccount();
+            InvalidateHomeFeedSection();
             _feedNavigation.Refresh();
             await LoadFeedAsync(!_feedNavigation.IsSearch && _feedNavigation.Section == HomeSection.Recommendations);
         }
@@ -852,21 +882,34 @@ namespace BiliXbox
         private async void Media_Opened(MediaPlayer sender, object args)
         {
             var source = sender.Source;
-            await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+            await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, async () =>
             {
-                if (_disposed || !_watching || source == null || source != _media.Source) return;
-                _sourceLoading = false;
-                _playbackHealth.Reset();
-                PlaybackError.Text = "";
-                ErrorPanel.Visibility = Visibility.Collapsed;
-                OfficialVideoButton.Visibility = Visibility.Collapsed;
-                ApplyRestorePosition();
-                if (_libraryVisible || _creatorVisible) _wantsPlayback = _resumeAfterOpen = false;
-                if (_resumeAfterOpen) _ = PlayWithDisplayAsync(); else _media.Pause();
-                UpdatePlaybackUi();
-                _playerUi.Touch(DateTimeOffset.UtcNow);
-                if (_playback != null) SetStatus(string.IsNullOrWhiteSpace(_playback.QualityNotice)
-                    ? "当前画质 · " + _playback.Quality : _playback.QualityNotice);
+                try
+                {
+                    if (_disposed || !_watching || source == null || source != _media.Source) return;
+                    _sourceLoading = false;
+                    RecordPlaybackTrack("media-opened", _playback,
+                        " native=" + _media.PlaybackSession.NaturalVideoWidth + "x" + _media.PlaybackSession.NaturalVideoHeight);
+                    _playbackHealth.Reset();
+                    PlaybackError.Text = "";
+                    ErrorPanel.Visibility = Visibility.Collapsed;
+                    OfficialVideoButton.Visibility = Visibility.Collapsed;
+                    ApplyRestorePosition();
+                    if (!await ValidateNativeFrameRateAsync()) return;
+                    if (_disposed || !_watching || source != _media.Source) return;
+                    if (_libraryVisible || _creatorVisible) _wantsPlayback = _resumeAfterOpen = false;
+                    if (_resumeAfterOpen) _ = PlayWithDisplayAsync(); else _media.Pause();
+                    UpdatePlaybackUi();
+                    _playerUi.Touch(DateTimeOffset.UtcNow);
+                    if (_playback != null) SetStatus(string.IsNullOrWhiteSpace(_playback.QualityNotice)
+                        ? "当前画质 · " + _playback.Quality : _playback.QualityNotice);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception error)
+                {
+                    if (!_disposed && _watching && source == _media.Source)
+                    { _wantsPlayback = _resumeAfterOpen = false; _media.Pause(); SetStatus("播放初始化失败：" + Friendly(error)); UpdatePlaybackUi(); }
+                }
             });
         }
 
@@ -876,15 +919,24 @@ namespace BiliXbox
             await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, async () =>
             {
                 if (_disposed || !_watching || source == null || source != _media.Source) return;
-                if (_playback?.CodecFallback != null && _video != null)
+                if (NativePlaybackFallback(_playback) != null && _video != null)
                 {
-                    var fallback = _playback.CodecFallback;
-                    _playback.CodecFallback = null;
-                    fallback.QualityNotice = "HEVC 解码失败，已回退到 " + fallback.Quality + " H.264 兼容播放。";
+                    var fallback = NativePlaybackFallback(_playback);
+                    _playback.QualityFailure = PlaybackQualityFailure.PlaybackFailed;
+                    RecordPlaybackTrack("media-failed", _playback,
+                        " error=" + args.Error + " hresult=" + (args.ExtendedErrorCode?.HResult.ToString("X8") ?? "none"));
+                    bool audioFallback = ReferenceEquals(fallback, _playback.AudioFallback);
+                    _playback.AudioFallback = _playback.CodecFallback = null;
+                    fallback.QualityFailure = PlaybackQualityFailure.PlaybackFailed;
+                    if (audioFallback) fallback.AudioNotice = EnhancedAudioFallbackNotice(_playback, false);
+                    else fallback.QualityNotice = "原轨道播放失败，正在尝试实际 " + fallback.Quality + " 的另一条兼容播放源。";
                     await LoadPartAsync(_currentCid, fallback.QualityId, true, fallback);
                     return;
                 }
                 _sourceLoading = _sessionBuffering = _wantsPlayback = false;
+                if (_playback != null) _playback.QualityFailure = PlaybackQualityFailure.PlaybackFailed;
+                RecordPlaybackTrack("media-failed", _playback,
+                    " error=" + args.Error + " hresult=" + (args.ExtendedErrorCode?.HResult.ToString("X8") ?? "none"));
                 _media.Pause();
                 await ResetPlaybackDisplayAsync();
                 if (_disposed || !_watching || source != _media.Source) return;
@@ -906,6 +958,8 @@ namespace BiliXbox
                 try
                 {
                     if (_disposed || !_watching || source == null || source != _media.Source) return;
+                    await FlushPlaybackHistoryAsync(true);
+                    if (_disposed || !_watching || source != _media.Source) return;
                     _wantsPlayback = _resumeAfterOpen = false;
                     _sessionBuffering = false;
                     _media.Pause();
@@ -950,7 +1004,7 @@ namespace BiliXbox
             var session = _media.PlaybackSession;
             bool playing = _media.Source != null && _wantsPlayback && session.PlaybackState == MediaPlaybackState.Playing;
             bool opening = _sourceLoading || (_media.Source != null && session.PlaybackState == MediaPlaybackState.Opening);
-            bool buffering = _wantsPlayback && (_sessionBuffering || session.PlaybackState == MediaPlaybackState.Buffering);
+            bool buffering = _wantsPlayback && (_sessionBuffering || session.PlaybackState == MediaPlaybackState.Buffering || IsWaitingForPlaybackBuffer);
             _playbackHealth.Update(DateTimeOffset.UtcNow, session.Position, playing, opening, buffering);
             bool waiting = _watching && ErrorPanel.Visibility != Visibility.Visible && _playbackHealth.Waiting;
             PlayerBusy.IsActive = waiting;
@@ -964,6 +1018,7 @@ namespace BiliXbox
 
         private void Clock_Tick(object sender, object e)
         {
+            ObservePlaybackHistory();
             if (!_watching || _creatorVisible || _libraryVisible) return;
             UpdatePlaybackUi();
             if (_media.Source == null) return;
@@ -987,6 +1042,7 @@ namespace BiliXbox
             if (!_restorePosition.HasValue || _media.Source == null) return;
             var session = _media.PlaybackSession;
             if (!session.CanSeek || session.NaturalDuration <= TimeSpan.Zero) return;
+            InvalidatePlaybackBuffering();
             session.Position = TimeSpan.FromSeconds(Math.Max(0, Math.Min(_restorePosition.Value.TotalSeconds, session.NaturalDuration.TotalSeconds)));
             _restorePosition = null;
         }
@@ -995,6 +1051,7 @@ namespace BiliXbox
         {
             if (!_updatingSlider && _media.Source != null && _media.PlaybackSession.CanSeek)
             {
+                InvalidatePlaybackBuffering();
                 _media.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue);
                 TimeLabel.Text = MediaTimeFormatter.Format(e.NewValue) + " / " + FormatTime(_media.PlaybackSession.NaturalDuration);
             }
@@ -1005,6 +1062,7 @@ namespace BiliXbox
         {
             if (_media.Source == null || !_media.PlaybackSession.CanSeek) return;
             var session = _media.PlaybackSession;
+            InvalidatePlaybackBuffering();
             session.Position = TimeSpan.FromSeconds(Math.Max(0, Math.Min(session.NaturalDuration.TotalSeconds, session.Position.TotalSeconds + seconds)));
         }
         private async void PlayPause_Click(object sender, RoutedEventArgs e)
@@ -1095,6 +1153,7 @@ namespace BiliXbox
         {
             _commentActionCard = null; _commentActionReturn = null;
             var drawer = _playerUi.Drawer;
+            if (drawer == PlayerDrawer.Settings) Cancel(ref _qualityCts);
             Cancel(ref _replyCts); _viewingReplies = _loadingReplies = false;
             RepliesBusy.IsActive = false;
             _playerUi.Close(DateTimeOffset.UtcNow);
@@ -1280,35 +1339,68 @@ namespace BiliXbox
                 ? " · " + _playback.VideoWidth + "×" + _playback.VideoHeight : "";
             string codec = _playback.VideoCodec ?? "";
             string codecName = codec.StartsWith("avc1", StringComparison.OrdinalIgnoreCase) ? "H.264"
-                : codec.StartsWith("hev1", StringComparison.OrdinalIgnoreCase) || codec.StartsWith("hvc1", StringComparison.OrdinalIgnoreCase) ? "HEVC" : "";
+                : codec.StartsWith("hev1", StringComparison.OrdinalIgnoreCase) || codec.StartsWith("hvc1", StringComparison.OrdinalIgnoreCase) ? "HEVC"
+                : codec.StartsWith("av01", StringComparison.OrdinalIgnoreCase) ? "AV1" : "";
             var notice = string.IsNullOrWhiteSpace(_qualityRequestNotice) ? _playback.QualityNotice : _qualityRequestNotice;
             QualityHint.Text = "当前：" + _playback.Quality + dimensions + (codecName.Length > 0 ? " · " + codecName : "")
                 + "\n" + membership
-                + (_playback.VideoFrameRate > 0 ? " · " + _playback.VideoFrameRate.ToString("0.##") + " 帧/秒" : "")
+                + (_playback.VideoFrameRateNative > 0 ? " · " + _playback.VideoFrameRateNative.ToString("0.##") + " 帧/秒（系统解析）"
+                    : _playback.VideoFrameRate > 0 ? " · " + _playback.VideoFrameRate.ToString("0.##")
+                        + (_playback.RequiresNativeFrameRateValidation ? " 帧/秒（接口元数据，待验证）" : " 帧/秒（接口元数据）") : "")
                 + (_playback.VideoBitrate > 0 ? " · " + (_playback.VideoBitrate / 1000000.0).ToString("0.##") + " Mbps" : "")
-                + (_playback.HardwareHevcVerified ? "\n已通过此分辨率的硬件 HEVC 能力查询" : "")
-                + (_playback.FourKDisplayVerified ? "\n已通过此分辨率的 4K 显示能力查询" : "")
-                + (_playback.IsHdr10 ? "\n视频源：HDR10" : "")
+                + (_playback.HardwareHevcVerified ? _playback.RequiresNativeFrameRateValidation && !_playback.NativeFrameRateVerified
+                    ? "\n已通过此分辨率的 60fps 基准 HEVC 查询；接口高帧率能力待确认" : "\n已通过此分辨率的硬件 HEVC 能力查询" : "")
+                + (_playback.FourKDisplayVerified ? "\n已通过独立的 4K 显示能力查询" : "")
+                + (_playback.IsHdr10 ? "\n视频源：HDR10" + (_playback.UsesSdrToneMapping ? " → SDR（系统色调映射）" : "") : "")
                 + (_playbackDisplay?.IsXbox == true && _playbackDisplay.Hdr10Active ? " · HDMI HDR10 输出已启用" : "")
-                + (_playbackDisplay?.IsXbox == true && _playbackDisplay.FourKActive ? "\nHDMI 4K 输出已启用" : "")
+                + (_playbackDisplay?.IsXbox == true && _playbackDisplay.FourKActive
+                    ? _playback.UsesSdrToneMapping ? "\nHDMI 4K SDR 输出已启用" : "\nHDMI 4K 输出已启用" : "")
                 + (string.IsNullOrWhiteSpace(_playback.CapabilityDiagnostic) ? "" : "\n" + _playback.CapabilityDiagnostic)
+                + (string.IsNullOrWhiteSpace(_playback.FrameRateNotice) ? "" : "\n" + _playback.FrameRateNotice)
                 + (string.IsNullOrWhiteSpace(notice) ? "" : "\n" + notice);
             foreach (var quality in _playback.AvailableQualities.Where(item => item.IsVisible))
             {
+                string entitlement = PlaybackQualityEntitlement.Badge(quality, _api.IsLoggedIn, _api.CurrentUser?.IsPremium == true);
+                bool compatibilityTrial = quality.RequiresCompatibilityTrial
+                    && !(quality.Id == _playback.QualityId && _playback.NativeFrameRateVerified);
+                string badge = entitlement.Length > 0 ? entitlement : compatibilityTrial ? "兼容试播" : "";
                 var button = new Button
                 {
                     Style = (Style)Application.Current.Resources["TvRowButtonStyle"],
-                    Content = new TextBlock { Text = (_playback.QualityId == quality.Id ? "✓  " : "     ") + quality.Label
-                        + (!quality.IsAvailable ? " · " + quality.Reason : quality.IsProbe ? " · 点击获取" : ""), TextWrapping = TextWrapping.Wrap, MaxWidth = 305 },
-                    Tag = quality.Id, IsEnabled = quality.IsAvailable,
-                    HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Tag = quality.Id, IsEnabled = quality.IsAvailable && entitlement.Length == 0,
+                    HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
                     FontSize = 18, Padding = new Thickness(16, 12, 16, 12)
                 };
+                var row = new Grid { ColumnSpacing = 10 };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var label = new TextBlock { Text = (_playback.QualityId == quality.Id ? "✓  " : "") + quality.Label
+                    + (entitlement.Length > 0 ? "" : !quality.IsAvailable ? " · " + quality.Reason : quality.IsProbe ? " · 点击获取" : ""),
+                    TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+                label.Foreground = button.Foreground;
+                row.Children.Add(label);
+                var requirement = new TextBlock { Text = badge, FontSize = 13, Opacity = .72,
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+                requirement.Foreground = button.Foreground;
+                button.GotFocus += (focused, focusArgs) =>
+                {
+                    var brush = (Brush)Application.Current.Resources["TvFocusForegroundBrush"];
+                    label.Foreground = requirement.Foreground = brush;
+                };
+                button.LostFocus += (unfocused, focusArgs) => label.Foreground = requirement.Foreground = button.Foreground;
+                Grid.SetColumn(requirement, 1); row.Children.Add(requirement); button.Content = row;
+                Windows.UI.Xaml.Automation.AutomationProperties.SetName(button, quality.Label + (badge.Length > 0 ? "，" + badge : ""));
                 button.Click += Quality_Click;
                 QualityOptions.Children.Add(button);
             }
             if (previousQuality.HasValue && _playerUi.Drawer == PlayerDrawer.Settings && _playerInput.Mode == PlayerInputMode.Controls)
-                (QualityOptions.Children.OfType<Button>().FirstOrDefault(button => (int)button.Tag == previousQuality.Value))?.Focus(FocusState.Keyboard);
+            {
+                var available = QualityOptions.Children.OfType<Button>().Where(button => button.IsEnabled).ToList();
+                var target = available.FirstOrDefault(button => (int)button.Tag == previousQuality.Value)
+                    ?? available.FirstOrDefault(button => (int)button.Tag == _playback.QualityId) ?? available.FirstOrDefault();
+                if (target == null || !target.Focus(FocusState.Keyboard)) SettingsCloseButton.Focus(FocusState.Keyboard);
+            }
+            UpdateAudioOptions();
             UpdateGamepadFocusOutline();
         }
         private async Task RefreshPlaybackQualitiesAsync()
@@ -1333,6 +1425,9 @@ namespace BiliXbox
         {
             if (IgnorePlayerClick() || _video == null || _watchCts == null) return;
             int quality = (int)((Button)sender).Tag;
+            var option = _playback?.AvailableQualities.FirstOrDefault(item => item.Id == quality);
+            if (option == null || !option.IsAvailable || PlaybackQualityEntitlement.Badge(option, _api.IsLoggedIn,
+                _api.CurrentUser?.IsPremium == true).Length > 0) return;
             if (_playback != null && quality == _playback.QualityId) { CloseDrawer(); return; }
             Cancel(ref _qualityCts);
             var owner = _qualityCts = CancellationTokenSource.CreateLinkedTokenSource(_watchCts.Token);
@@ -1394,25 +1489,36 @@ namespace BiliXbox
             UpdateSectionButtons();
             if (_feedNavigation.Section == HomeSection.Live && !_feedNavigation.IsSearch)
             { ShowLiveSectionSurface(); if (loadLive) _ = LoadLiveSectionAsync(); return; }
-            if (!HomeResultGrid.Focus(FocusState.Programmatic)) HomeButton.Focus(FocusState.Programmatic);
-            RestoreHomeGamepadFocus();
+            if (!RestoreVisibleHomeFeedPosition())
+            {
+                if (!HomeResultGrid.Focus(FocusState.Programmatic)) HomeButton.Focus(FocusState.Programmatic);
+                RestoreHomeGamepadFocus();
+            }
         }
         private async Task ShowRecommendationsAsync()
         {
             if (_disposed) return;
-            ClearAccountLibraryNavigation();
-            ClearCreatorNavigation();
-            // The recommendation action changes the feed, whereas leaving a
-            // video restores whichever search/recommendation list opened it.
-            _feedNavigation.Recommendations();
-            GoHome();
-            SearchInput.Text = "";
-            SearchQueryLabel.Text = "搜索视频或用户，支持 BV 号 / 视频链接";
-            HomeButton.Focus(FocusState.Programmatic);
-            await LoadFeedAsync(true);
+            await SelectSectionAsync(HomeSection.Recommendations);
         }
+        private void RecordPlaybackTrack(string phase, PlaybackInfo playback, string detail = "")
+        {
+            if (playback == null) return;
+            string codec = Regex.Replace(playback.VideoCodec ?? "", "[^A-Za-z0-9._-]", "");
+            if (codec.Length > 80) codec = codec.Substring(0, 80);
+            PlaybackDiagnosticsLog.Record(phase + " generation=" + _partGeneration + " qn=" + playback.QualityId + " track=" + playback.VideoTrackIndex
+                + " sourceQn=" + (playback.SourceQualityId > 0 ? playback.SourceQualityId : playback.QualityId)
+                + " codec=" + codec + " range=" + (playback.IsHdr10 ? "HDR10" : "SDR")
+                + " outputRange=" + (playback.UsesSdrToneMapping ? "SDR-tone-mapped" : playback.IsHdr10 ? "HDR10" : "SDR")
+                + " sdrToneMapping=" + playback.UsesSdrToneMapping
+                + " expected=" + playback.VideoWidth + "x" + playback.VideoHeight
+                + " reportedFps=" + playback.VideoFrameRate + " probeFps=" + playback.VideoFrameRateProbe
+                + " nativeFps=" + playback.VideoFrameRateNative + " nativeFpsVerified=" + playback.NativeFrameRateVerified
+                + " nativeTrial=" + playback.RequiresNativeFrameRateValidation + " audio=" + playback.AudioMode + detail);
+        }
+
         private void StopMedia(bool resetDisplay = true)
         {
+            QueuePlaybackHistoryFlush();
             CancelDisplayPlayRequest();
             _media.Pause();
             _sourceLoading = _sessionBuffering = _wantsPlayback = false;
@@ -1423,6 +1529,7 @@ namespace BiliXbox
             BufferingOverlay.Visibility = Visibility.Collapsed;
             _restorePosition = null;
             _media.Source = null;
+            ClearNativeFrameRateValidationPlaybackItem();
             if (_adaptivePlayback != null) { _adaptivePlayback.Dispose(); _adaptivePlayback = null; }
             else _source?.Dispose();
             _source = null;
@@ -1433,7 +1540,7 @@ namespace BiliXbox
             TimeLabel.Text = "0:00 / 0:00";
             if (resetDisplay) _ = ResetPlaybackDisplayAsync();
         }
-        public void SuspendPlayback() { DisposeCommentImages(); StopSectionMotion(); SuspendVideoInteractions(); StopCommentReactions(); LiveHub.StopRequests(); Cancel(ref _liveCts); ++_textInputRequest; _activeInlineTextInput?.Cancel(); AccountLibrary.StopRequests(); CreatorHub.StopRequests(); SuspendGamepadInput(); Cancel(ref _qualityCts); _playerInput.Reset(); _resumeAfterOpen = _wantsPlayback = false; _media.Pause(); DisablePointerCursor(); (_activeLoginDialog as AccountLoginDialog)?.Dispose(); (_activeGeneralDialog as CommentReaderDialog)?.Dispose(); _activeLoginDialog?.Hide(); _activeTextDialog?.Hide(); _activeGeneralDialog?.Hide(); }
+        public void SuspendPlayback() { ResetPlaybackBuffering(); DisposeCommentImages(); StopSectionMotion(); SuspendVideoInteractions(); StopCommentReactions(); LiveHub.StopRequests(); Cancel(ref _liveCts); ++_textInputRequest; _activeInlineTextInput?.Cancel(); AccountLibrary.StopRequests(); CreatorHub.StopRequests(); SuspendGamepadInput(); Cancel(ref _qualityCts); _playerInput.Reset(); _resumeAfterOpen = _wantsPlayback = false; _media.Pause(); DisablePointerCursor(); (_activeLoginDialog as AccountLoginDialog)?.Dispose(); (_activeGeneralDialog as CommentReaderDialog)?.Dispose(); _activeLoginDialog?.Hide(); _activeTextDialog?.Hide(); _activeGeneralDialog?.Hide(); }
 
         private async Task ShowSearchInputAsync()
         {
@@ -1574,7 +1681,13 @@ namespace BiliXbox
             if (!_watching)
             {
                 if (!_feedNavigation.CanReturnToRecommendations) return false;
-                await ShowRecommendationsAsync();
+                if (!_feedNavigation.IsSearch && _feedNavigation.Section == HomeSection.Recommendations)
+                {
+                    CaptureVisibleHomeFeedPosition();
+                    _feedNavigation.SelectSection(HomeSection.Recommendations);
+                    await LoadFeedAsync();
+                }
+                else await ShowRecommendationsAsync();
                 return true;
             }
             if (_playerUi.Drawer == PlayerDrawer.Comments && ExitCommentActions()) return true;
@@ -1625,8 +1738,6 @@ namespace BiliXbox
                 if (_creatorVisible) await CreatorHub.WriteCommentAsync();
                 else if (!TryOpenCommentComposer()) DanmakuEntry_Click(sender, new RoutedEventArgs());
             }
-            else if (e.VirtualKey == VirtualKey.GamepadLeftShoulder && _watching && !_creatorVisible) { ShowControls(); Skip(-10); e.Handled = true; }
-            else if (e.VirtualKey == VirtualKey.GamepadRightShoulder && _watching && !_creatorVisible) { ShowControls(); Skip(10); e.Handled = true; }
             else if (_watching && !_creatorVisible) _playerUi.Touch(DateTimeOffset.UtcNow);
         }
 
@@ -1690,9 +1801,10 @@ namespace BiliXbox
                 {
                     Title = "弹幕舱 · 使用帮助", CloseButtonText = "知道了",
                     RequiresPointer = RequiresPointer.Never, XYFocusKeyboardNavigation = XYFocusKeyboardNavigationMode.Enabled,
-                    Content = new TextBlock { Text = "左摇杆 / 方向键：移动焦点\nA：确认；播放控件隐藏时播放 / 暂停\n首页：左右选视频，上下换行；边缘可到搜索、顶栏、翻页\n播放器：左右选按钮；上进进度条，再上到顶栏；下返回\n进度条：左右快退 / 快进 10 秒\nB：回复回主评论，再关闭面板 / 隐藏控件 / 返回列表\nX：发弹幕　Y：原生搜索键盘\n首页 LB / RB：切换分区；播放器 LB / RB：前后 10 秒\n右摇杆：滚动列表 / 聊天，焦点随画面移动\n\n首页刷新换一批推荐，服务端识别账号后显示为你推荐。\n评论支持头像、点赞、表情、回复及逐条滚动。\n播放时闲置 5 秒隐藏控件，方向键或左摇杆重新显示。\n搜索和评论使用系统原生键盘，取消后可重新打开。\n先扫码登录，再发布评论或弹幕。\n底栏「互动」可点赞、投币、选择收藏夹和确认三连。\n三连最多使用2枚硬币，收藏到默认收藏夹；提交未确认时先刷新。\nUP头像/名字或互动侧栏的主页入口可浏览投稿和动态。\n\n第三方客户端，与哔哩哔哩和微软无隶属关系。画质和内容访问由平台及账号权限决定。", FontSize = 17, TextWrapping = TextWrapping.Wrap, MaxWidth = 520 }
+                    Content = new TextBlock { Text = "左摇杆 / 方向键：移动焦点\nA：确认；播放控件隐藏时播放 / 暂停\n首页：左右选视频，上下换行；边缘可到搜索、顶栏、翻页\n播放器：左右选按钮；上进进度条，再上到顶栏；下返回\n进度条：左右快退 / 快进 10 秒\nB：回复回主评论，再关闭面板 / 隐藏控件 / 返回列表\nX：发弹幕　Y：原生搜索键盘\n首页 LB / RB：切换分区；播放器 LB / RB：前后 5 秒\n右摇杆：滚动列表 / 聊天，焦点随画面移动\n\n首页刷新换一批推荐，服务端识别账号后显示为你推荐。\n评论支持头像、点赞、表情、回复及逐条滚动。\n播放时闲置 5 秒隐藏控件，方向键或左摇杆重新显示。\n搜索和评论使用系统原生键盘，取消后可重新打开。\n先扫码登录，再发布评论或弹幕。\n底栏「互动」可点赞、投币、选择收藏夹和确认三连。\n三连最多使用2枚硬币，收藏到默认收藏夹；提交未确认时先刷新。\nUP头像/名字或互动侧栏的主页入口可浏览投稿和动态。\n\n第三方客户端，与哔哩哔哩和微软无隶属关系。画质和内容访问由平台及账号权限决定。", FontSize = 17, TextWrapping = TextWrapping.Wrap, MaxWidth = 520 }
                 };
-                ((TextBlock)dialog.Content).Text += "\n\n手柄输入诊断\n" + GamepadDiagnostics;
+                ((TextBlock)dialog.Content).Text += "\n\n版本：" + AppVersionInfo.DisplayVersion
+                    + " · 安装包：" + AppVersionInfo.PackageVersion + "\n\n手柄输入诊断\n" + GamepadDiagnostics;
                 _activeGeneralDialog = dialog;
                 dialog.Closed += (s, args) => _lastBack = DateTimeOffset.UtcNow;
                 await dialog.ShowAsync();
@@ -1715,10 +1827,11 @@ namespace BiliXbox
         private static string FormatTime(TimeSpan time) => MediaTimeFormatter.Format(time);
         private static void Cancel(ref CancellationTokenSource source) { var old = source; source = null; if (old != null) { old.Cancel(); old.Dispose(); } }
 
-        private void Page_Unloaded(object sender, RoutedEventArgs e)
+        private async void Page_Unloaded(object sender, RoutedEventArgs e)
         {
             if (_disposed) return;
             StopSectionMotion();
+            var historyFlush = FlushPlaybackHistoryAsync();
             _disposed = true;
             DisposeCommentImages();
             StopCommentReactions(true);
@@ -1752,6 +1865,9 @@ namespace BiliXbox
             StopMedia();
             _media.Dispose();
             Danmaku.Dispose();
+            await historyFlush;
+            StopPlaybackHistory();
+            _api.PlaybackDiagnostic -= PlaybackDiagnosticsLog.Record;
             _api.Dispose();
         }
     }

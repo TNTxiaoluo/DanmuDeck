@@ -20,7 +20,8 @@ namespace BiliXbox.PlaybackQualityTests
             Windows.Graphics.Display.Core.HdmiDisplayInformation.ViewQueries = 0;
             Windows.Graphics.Display.Core.HdmiDisplayInformation.ThrowView = false;
             Windows.Graphics.Display.Core.HdmiDisplayInformation.ThrowModes = false;
-            Windows.Media.Protection.ProtectionCapabilities.Query = (contentType, keySystem) => Windows.Media.Protection.ProtectionCapabilityResult.Probably;
+            Windows.Media.Protection.ProtectionCapabilities.Query = (contentType, keySystem) => contentType.Contains("av01")
+                ? Windows.Media.Protection.ProtectionCapabilityResult.NotSupported : Windows.Media.Protection.ProtectionCapabilityResult.Probably;
             Transport.Reset((request, token) =>
             {
                 if (request.RequestUri.AbsolutePath == "/x/web-interface/nav")
@@ -40,8 +41,8 @@ namespace BiliXbox.PlaybackQualityTests
                 Check(query["bvid"] == Video.Bvid && query["cid"] == "987654", "video and part retained");
                 if (request.RequestUri.AbsolutePath == "/x/player/wbi/playurl")
                 {
-                    Check(int.Parse(query["qn"]) > 0 && query["fnval"] == "2000" && query["fourk"] == "1" && !query.ContainsKey("platform") && query.ContainsKey("w_rid") && query.ContainsKey("wts"), "signed DASH enables HD/UHD without HTML5 ceiling");
-                    Check((int.Parse(query["fnval"]) & 2048) == 0, "codec negotiation never advertises unsupported AV1");
+                    Check(int.Parse(query["qn"]) > 0 && (query["fnval"] == "2000" || query["fnval"] == "4048") && query["fourk"] == "1" && !query.ContainsKey("platform") && query.ContainsKey("w_rid") && query.ContainsKey("wts"), "signed DASH enables HD/UHD without HTML5 ceiling");
+                    Check(query["fnval"] == "2000" || query["fnval"] == "4048", "codec negotiation uses bounded AVC/HEVC or hardware-confirmed AV1 request");
                 }
                 else Check(request.RequestUri.AbsolutePath == "/x/player/playurl" && query["fnval"] == "1", "only justified compatibility request uses old endpoint");
                 return handler(request, token);
@@ -556,8 +557,10 @@ namespace BiliXbox.PlaybackQualityTests
                 Check(info.QualityId == 120 && info.VideoCodec.StartsWith("hvc1.") && info.VideoWidth == 3840
                     && info.VideoBitrate == 12345000 && Math.Abs(info.VideoFrameRate - 59.94005994) < 0.0001,
                     "confirmed4K hardware HEVC wins over4K AVC while retaining real dimensions bitrate and rational fps");
-                Check(info.CodecFallback.QualityId == 80 && info.CodecFallback.DashManifest.Contains("avc1.")
-                    && info.CodecFallback.AvailableQualities.Any(item => item.Id == 120), "H264 fallback stays in authorized response and preserves quality catalogue");
+                Check(info.CodecFallback.QualityId == 120 && info.CodecFallback.DashManifest.Contains("avc1.")
+                    && info.CodecFallback.CodecFallback.QualityId == 80
+                    && info.CodecFallback.AvailableQualities.Any(item => item.Id == 120),
+                    "compatible same-tier desktop AVC is tried before the authorized1080 fallback and preserves catalogue");
             }
             var hdr = Dash(120, 80);
             var hdrTrack = (JObject)hdr["data"]["dash"]["video"].First(item => (int)item["id"] == 120);
@@ -610,7 +613,8 @@ namespace BiliXbox.PlaybackQualityTests
                 {
                     await Login(client);
                     var info = await client.GetPlaybackAsync(Video, 120);
-                    Check(info.QualityId == 80 && !info.HardwareHevcVerified && info.CodecFallback == null
+                    Check(info.QualityId == 80 && !info.HardwareHevcVerified
+                        && (info.CodecFallback == null || info.CodecFallback.QualityId < 80)
                         && info.AvailableQualities.First(item => item.Id == 120).IsVisible == (unavailable != "not-supported")
                         && !info.AvailableQualities.First(item => item.Id == 120).IsAvailable,
                         "unknown UHD query remains visible/disabled while confirmedNotSupported is hidden: " + unavailable);
@@ -625,15 +629,76 @@ namespace BiliXbox.PlaybackQualityTests
                 Check(info.QualityId == 80 && !info.HardwareHevcVerified && !info.AvailableQualities.First(item => item.Id == 120).IsAvailable,
                     "HEVC-only UHD without hardware confirmation uses real1080 compatibility source instead of software4K");
             }
+            foreach (var dimensions in new[] { new[] { 2880, 2160 }, new[] { 2160, 2880 }, new[] { 3840, 1600 } })
+            {
+                var aspect = Dash(120, 80);
+                var track = aspect["data"]["dash"]["video"][0];
+                track["width"] = dimensions[0]; track["height"] = dimensions[1]; track["codecs"] = "hvc1.1.6.L153.90";
+                ((JArray)aspect["data"]["accept_quality"]).RemoveAt(0);
+                ((JArray)aspect["data"]["support_formats"]).RemoveAt(0);
+                Stub(aspect, logged: true, premium: true);
+                using (var client = new BilibiliClient())
+                {
+                    await Login(client);
+                    var messages = new List<string>(); client.PlaybackDiagnostic += messages.Add;
+                    var info = await client.GetPlaybackAsync(Video, 80);
+                    Check(info.QualityId == 80 && info.AvailableQualities.Any(item => item.Id == 120 && item.IsVisible && item.HasPlaybackSource),
+                        "actual non16:9 UHD track missing from advertised menu remains selectable");
+                    info = await client.GetPlaybackAsync(Video, 120);
+                    Check(info.QualityId == 120 && info.VideoWidth == dimensions[0] && info.VideoHeight == dimensions[1]
+                        && info.FourKDisplayVerified && info.QualityFailure == PlaybackQualityFailure.None,
+                        "native4K aspect ratios retain actual dimensions and require device confirmation");
+                    Check(info.PlaybackDiagnostic.Contains(dimensions[0] + "x" + dimensions[1])
+                        && info.PlaybackDiagnostic.Contains("codec=hvc1") && info.PlaybackDiagnostic.Contains("decision=eligible")
+                        && messages.Any(value => value.StartsWith("catalog")), "diagnostics retain raw tier dimensions codec and eligibility");
+                    Check(!string.Join("\n", messages).Contains("fixture-only") && !info.PlaybackDiagnostic.Contains("https://"),
+                        "diagnostics exclude authentication values and signed media URLs");
+                }
+            }
+            var fakeUhd = Dash(120, 80);
+            fakeUhd["data"]["dash"]["video"][0]["width"] = 1920;
+            fakeUhd["data"]["dash"]["video"][0]["height"] = 1080;
+            Stub(fakeUhd, logged: true, premium: true);
+            using (var client = new BilibiliClient())
+            {
+                await Login(client); var info = await client.GetPlaybackAsync(Video, 120);
+                Check(info.QualityId == 80 && info.QualityFailure == PlaybackQualityFailure.SourceUnsupported
+                    && info.PlaybackDiagnostic.Contains("excluded: 此档播放源未提供可验证的超高清分辨率"),
+                    "a1080 stream carrying qn120 is rejected and never relabelled native4K");
+            }
+            Stub((request, token) =>
+            {
+                var response = Dash(120, 80);
+                bool requestedAv1 = request.RequestUri.Query.Contains("fnval=4048");
+                var track = response["data"]["dash"]["video"][0];
+                track["codecs"] = requestedAv1 ? "av01.0.13M.08" : "hvc1.1.6.L153.90";
+                return Transport.Json(response.ToString());
+            }, logged: true, premium: true);
+            Windows.Media.Protection.ProtectionCapabilities.Query = (contentType, keySystem) => contentType.Contains("hvc1")
+                ? Windows.Media.Protection.ProtectionCapabilityResult.NotSupported : Windows.Media.Protection.ProtectionCapabilityResult.Probably;
+            Windows.System.Profile.AnalyticsInfo.VersionInfo.DeviceFamily = "Windows.Xbox";
+            using (var client = new BilibiliClient())
+            {
+                await Login(client); var info = await client.GetPlaybackAsync(Video, 120);
+                Check(info.QualityId == 120 && info.VideoCodec.StartsWith("av01.") && info.FourKDisplayVerified
+                    && info.VideoBitsPerChannel == 8 && info.PlaybackDiagnostic.Contains("fnval=4048"),
+                    "confirmed AV1 hardware obtains genuine4K via one alternate negotiation");
+                Check(PlaybackRequests == 2 && info.CodecFallback?.QualityId == 80,
+                    "AV1 negotiation is bounded and retains authorized H264 fallback");
+            }
             var unavailableCodec = Dash(120, 80);
             unavailableCodec["data"]["dash"]["video"][0]["codecs"] = "av01.0.13M.08";
             Stub(unavailableCodec, logged: true, premium: true);
+            Windows.Media.Protection.ProtectionCapabilities.Query = (contentType, keySystem) => contentType.Contains("av01")
+                ? Windows.Media.Protection.ProtectionCapabilityResult.NotSupported : Windows.Media.Protection.ProtectionCapabilityResult.Probably;
             using (var client = new BilibiliClient())
             {
                 await Login(client);
                 var info = await client.GetPlaybackAsync(Video, 120);
                 var uhd = info.AvailableQualities.First(item => item.Id == 120);
                 Check(info.QualityId == 80 && !uhd.IsAvailable && uhd.Reason.Contains("编码"), "AV1-only4K has a codec reason instead of falsely blaming membership");
+                Check(info.QualityFailure == PlaybackQualityFailure.DeviceUnsupported && info.PlaybackDiagnostic.Contains("excluded:"),
+                    "device codec refusal has a distinct failure category and exact track reason");
             }
             var absent = Dash(80, 64, 32, 16);
             ((JArray)absent["data"]["accept_quality"]).RemoveAt(0);
@@ -643,6 +708,8 @@ namespace BiliXbox.PlaybackQualityTests
                 await Login(client);
                 var info = await client.GetPlaybackAsync(Video, 120);
                 Check(info.QualityId == 80 && !info.AvailableQualities.Any(item => item.Id == 120), "video with no advertised4K does not gain an invented4K option");
+                Check(info.QualityFailure == PlaybackQualityFailure.ServerNotReturned,
+                    "missing service4K stream is distinct from device refusal and native playback failure");
             }
             foreach (var nested in new[] { false, true })
             {
@@ -694,7 +761,7 @@ namespace BiliXbox.PlaybackQualityTests
                 if (variant == "missing-audio") invalid["data"]["dash"]["audio"] = new JArray();
                 if (variant == "bad-range") invalid["data"]["dash"]["video"][0]["SegmentBase"]["indexRange"] = "1811-0";
                 if (variant == "bad-url") invalid["data"]["dash"]["video"][0]["baseUrl"] = "file:///private";
-                if (variant == "unsupported-codec") invalid["data"]["dash"]["video"][0]["codecs"] = "av01.0.08M.08";
+                if (variant == "unsupported-codec") invalid["data"]["dash"]["video"][0]["codecs"] = "unknown.0";
                 if (variant == "bad-duration") invalid["data"]["dash"]["duration"] = "Infinity";
                 Stub(invalid);
                 using (var client = new BilibiliClient()) await Error(async () => { await client.GetPlaybackAsync(Video); }, -1, "unsafe DASH rejected: " + variant);

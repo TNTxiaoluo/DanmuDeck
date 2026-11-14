@@ -23,7 +23,11 @@ namespace BiliXbox
             var extra = _gamepadAuxiliary.Sample(_gamepadClock.Elapsed, _activeGamepad,
                 (reading.Buttons & GamepadButtons.LeftShoulder) != 0,
                 (reading.Buttons & GamepadButtons.RightShoulder) != 0, reading.RightThumbstickY, enabled);
-            if (extra.SectionStep != 0 && IsSectionBrowseSurface) StepHomeSection(extra.SectionStep);
+            if (extra.SectionStep != 0)
+            {
+                if (IsSectionBrowseSurface) StepHomeSection(extra.SectionStep);
+                else SeekVideoShoulder(extra.SectionStep);
+            }
             if (Math.Abs(extra.ScrollPixels) >= .05) ScrollGamepadSurface(extra.ScrollPixels);
         }
 
@@ -41,6 +45,19 @@ namespace BiliXbox
             => key == VirtualKey.GamepadLeftShoulder ? -1 : key == VirtualKey.GamepadRightShoulder ? 1 : 0;
         private static int ScrollKey(VirtualKey key)
             => key == VirtualKey.GamepadRightThumbstickUp ? -1 : key == VirtualKey.GamepadRightThumbstickDown ? 1 : 0;
+
+        private bool IsShoulderSeekSurface => _watching && !_creatorVisible && !_libraryVisible && !_liveVisible
+            && !_disposed && !_dialogOpen && !_inputPaneVisible && !IsNativeGamepadEditorActive
+            && _playerUi.Drawer == PlayerDrawer.None;
+
+        private void SeekVideoShoulder(int step)
+        {
+            if (!IsShoulderSeekSurface || step == 0) return;
+            ShowControls();
+            // Seeking only changes Position. Never call Play or change the
+            // user's pause intent, whether the controls are shown or hidden.
+            Skip(Math.Sign(step) * 5);
+        }
         private static bool IsAuxiliaryGamepadEvent(KeyRoutedEventArgs args)
             => SectionStepKey(args.OriginalKey) != 0 || SectionStepKey(args.Key) != 0
                 || ScrollKey(args.OriginalKey) != 0 || ScrollKey(args.Key) != 0;
@@ -51,6 +68,13 @@ namespace BiliXbox
             if (step != 0 && IsSectionBrowseSurface)
             {
                 if (!RawGamepadOwnsNavigation && !repeat) StepHomeSection(step);
+                return true;
+            }
+            if (step != 0 && _watching && !_creatorVisible && !_libraryVisible && !_liveVisible)
+            {
+                // Raw polling owns the physical bumper edge. Consume the
+                // platform's mapped alias so one press never seeks twice.
+                if (!RawGamepadOwnsNavigation && !repeat) SeekVideoShoulder(step);
                 return true;
             }
             if (scroll != 0)

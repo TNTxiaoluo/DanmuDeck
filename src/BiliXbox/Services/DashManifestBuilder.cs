@@ -13,16 +13,31 @@ namespace BiliXbox.Services
         private static readonly XNamespace Ns = "urn:mpeg:dash:schema:mpd:2011";
 
         internal static bool IsSupportedVideo(JToken track)
+            => VideoRejectionReason(track).Length == 0;
+
+        internal static string VideoRejectionReason(JToken track)
         {
             var codec = Text(track, "codecs");
-            return (codec.StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
+            if (!(codec.StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("av01.", StringComparison.OrdinalIgnoreCase)
                 || codec.StartsWith("hev1.", StringComparison.OrdinalIgnoreCase)
-                || codec.StartsWith("hvc1.", StringComparison.OrdinalIgnoreCase)) && HasMedia(track)
-                && !HasUnsupportedHdr(track);
+                || codec.StartsWith("hvc1.", StringComparison.OrdinalIgnoreCase))) return "未实现此视频编码";
+            if (!HasMedia(track)) return "缺少有效媒体地址或初始化/索引分段";
+            return HasUnsupportedHdr(track) ? "不支持此 HDR 格式或 HDR 元数据冲突" : "";
         }
 
         internal static bool IsSupportedAudio(JToken track)
-            => Text(track, "codecs").StartsWith("mp4a.40.", StringComparison.OrdinalIgnoreCase) && HasMedia(track);
+            => (IsAacAudio(track) || IsDolbyAudio(track) || IsFlacAudio(track)) && HasMedia(track);
+
+        internal static bool IsAacAudio(JToken track)
+            => Text(track, "codecs").StartsWith("mp4a.40.", StringComparison.OrdinalIgnoreCase);
+
+        internal static bool IsDolbyAudio(JToken track)
+            => string.Equals(Text(track, "codecs"), "ec-3", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Text(track, "codecs"), "ac-3", StringComparison.OrdinalIgnoreCase);
+
+        internal static bool IsFlacAudio(JToken track)
+            => string.Equals(Text(track, "codecs"), "flac", StringComparison.OrdinalIgnoreCase);
 
         internal static bool IsHdr10(JToken track)
         {
@@ -121,7 +136,7 @@ namespace BiliXbox.Services
             var manifest = new XDocument(new XElement(Ns + "MPD",
                 new XAttribute("type", "static"),
                 new XAttribute("profiles", "urn:mpeg:dash:profile:isoff-on-demand:2011"),
-                new XAttribute("minBufferTime", "PT5S"),
+                new XAttribute("minBufferTime", "PT3S"),
                 new XAttribute("mediaPresentationDuration", length),
                 new XElement(Ns + "Period", new XAttribute("id", "0"), new XAttribute("start", "PT0S"),
                     new XAttribute("duration", length), Adaptation(video, "video", "0"), Adaptation(audio, "audio", "1"))));
@@ -134,7 +149,7 @@ namespace BiliXbox.Services
             var representation = new XElement(Ns + "Representation",
                 new XAttribute("id", kind + "-" + Text(track, "id")),
                 new XAttribute("bandwidth", Text(track, "bandwidth")),
-                new XAttribute("codecs", Text(track, "codecs")),
+                new XAttribute("codecs", kind == "audio" && IsFlacAudio(track) ? "fLaC" : Text(track, "codecs")),
                 new XElement(Ns + "BaseURL", Url(track)),
                 new XElement(Ns + "SegmentBase", new XAttribute("indexRange", Text(segment, "indexRange", "index_range")),
                     new XAttribute("indexRangeExact", "true"),
@@ -160,8 +175,20 @@ namespace BiliXbox.Services
             var adaptation = new XElement(Ns + "AdaptationSet", new XAttribute("id", id),
                 new XAttribute("contentType", kind), new XAttribute("mimeType", kind + "/mp4"),
                 new XAttribute("segmentAlignment", "true"), new XAttribute("startWithSAP", "1"));
-            if (kind == "audio") adaptation.Add(new XElement(Ns + "Role",
-                new XAttribute("schemeIdUri", "urn:mpeg:dash:role:2011"), new XAttribute("value", "main")));
+            if (kind == "audio")
+            {
+                adaptation.Add(new XElement(Ns + "Role", new XAttribute("schemeIdUri", "urn:mpeg:dash:role:2011"), new XAttribute("value", "main")));
+                int sampleRate;
+                if (int.TryParse(Text(track, "audioSamplingRate", "sample_rate", "sampleRate", "sampling_rate"), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out sampleRate) && sampleRate > 0 && sampleRate <= 1048575)
+                    representation.Add(new XAttribute("audioSamplingRate", sampleRate));
+                int channels;
+                if (int.TryParse(Text(track, "channels", "channel_count", "channelCount"), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out channels) && channels > 0 && channels <= 32)
+                    representation.Add(new XElement(Ns + "AudioChannelConfiguration",
+                        new XAttribute("schemeIdUri", "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"),
+                        new XAttribute("value", channels)));
+            }
             adaptation.Add(representation);
             return adaptation;
         }
@@ -187,9 +214,16 @@ namespace BiliXbox.Services
         private static bool ValidRate(string value)
         {
             var parts = value.Split('/');
-            if (parts.Length > 2) return false;
-            return parts.All(part => { double number; return double.TryParse(part, NumberStyles.AllowDecimalPoint,
-                CultureInfo.InvariantCulture, out number) && !double.IsNaN(number) && !double.IsInfinity(number) && number > 0; });
+            if (parts.Length < 1 || parts.Length > 2) return false;
+            double numerator, denominator = 1;
+            if (!double.TryParse(parts[0], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out numerator)
+                || (parts.Length == 2 && !double.TryParse(parts[1], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out denominator))
+                || double.IsNaN(numerator) || double.IsInfinity(numerator) || numerator <= 0
+                || double.IsNaN(denominator) || double.IsInfinity(denominator) || denominator <= 0) return false;
+            // A suspicious API estimate is not a trustworthy MPD frame-rate
+            // declaration. Leave it absent so native timestamps/codec metadata
+            // can establish the rate; never replace it with a fabricated 60.
+            return numerator / denominator <= 60.001;
         }
 
         private static void AddNumber(XElement element, JToken track, string name)

@@ -30,8 +30,8 @@ function Test-Excluded([string]$Relative) {
         $Relative -match '(?i)(^|/)(\.env(?:\..*)?|cookies?\.(txt|json))$'
 }
 
-$rootFiles = @('.gitignore', 'BiliXbox.sln', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.txt')
-$publicDocuments = @('docs/BUILDING.md', 'docs/TESTING.md', 'docs/CONTROLS.md', 'docs/STORE.md')
+$rootFiles = @('.gitignore', 'AGENTS.md', 'BiliXbox.sln', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.txt')
+$publicDocuments = @('docs/BUILDING.md', 'docs/TESTING.md', 'docs/CONTROLS.md', 'docs/STORE.md', 'docs/PLAYBACK-DIAGNOSTICS.md', 'docs/RELEASE-NOTES-1.0.2.md')
 $paths = [Collections.Generic.List[string]]::new()
 foreach ($relative in $rootFiles + $publicDocuments) {
     $path = Assert-WorkspacePath (Join-Path $workspace $relative)

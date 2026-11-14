@@ -88,9 +88,19 @@ try {
     $surface.Load($items)
     $surface.Update([TimeSpan]::Zero, $false)
     $initialCount = $surface.Children.Count
-    Assert-True ($initialCount -gt 0 -and $initialCount -le 12) 'Dense scrolling input exceeded the lane limit.'
+    Assert-True ($initialCount -gt 0 -and $initialCount -le 12) 'Dense scrolling input exceeded the per-frame admission budget.'
     $occupiedRows = @($surface.Children | ForEach-Object { $_.Top } | Sort-Object -Unique)
     Assert-True ($occupiedRows.Count -eq $initialCount) 'Simultaneous messages collided in one scrolling lane.'
+
+    # More than twelve rows are now allowed: fill the initially unused rows
+    # before testing a blocked entrance, rather than mistaking valid admission
+    # into a free row for overlap with an occupied one.
+    for ($i = $initialCount; $i -lt 64; $i++) {
+        $beforeFill = $surface.Children.Count
+        $surface.Add((New-ItemData 0 ('fill-unused-' + $i)))
+        if ($surface.Children.Count -eq $beforeFill) { break }
+    }
+    Assert-True ($surface.Children.Count -gt $initialCount) 'The complete scrolling area was still limited to twelve rows.'
 
     $surface.Add((New-ItemData 0.1 'too-close'))
     $surface.Add((New-ItemData 2 'following'))
@@ -119,7 +129,9 @@ try {
     $top = @($surface.Children | Where-Object { $_.Text -eq 'top' })[0]
     $bottom = @($surface.Children | Where-Object { $_.Text -eq 'bottom' })[0]
     $scroll = @($surface.Children | Where-Object { $_.Text -eq 'scroll' })[0]
-    Assert-True ($top.Top -lt $scroll.Top -and $scroll.Top -lt $bottom.Top) 'Fixed and scrolling modes did not reserve separate vertical areas.'
+    Assert-True ($top.Top -eq $scroll.Top -and $bottom.Top -gt $top.Top) 'Fixed messages still reserved rows from the scrolling area.'
+    Assert-True ([Windows.UI.Xaml.Controls.Canvas]::GetZIndex($top) -gt [Windows.UI.Xaml.Controls.Canvas]::GetZIndex($scroll) -and
+        [Windows.UI.Xaml.Controls.Canvas]::GetZIndex($bottom) -gt [Windows.UI.Xaml.Controls.Canvas]::GetZIndex($scroll)) 'Fixed messages did not render above the scrolling layer.'
     for ($step = 1; $step -le 10; $step++) {
         $surface.Update([TimeSpan]::FromSeconds($step / 2.0), $false)
     }

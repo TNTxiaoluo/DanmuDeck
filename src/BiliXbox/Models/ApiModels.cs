@@ -41,6 +41,19 @@ namespace BiliXbox.Models
         public int Page { get; set; }
     }
 
+    public enum PlaybackQualityFailure { None, ServerNotReturned, SourceUnsupported, DeviceUnsupported, CapabilityUnconfirmed, PlaybackFailed, DisplayFailed }
+    public enum PlaybackAudioMode { Standard, Dolby, HiRes }
+
+    public sealed class PlaybackAudioOption
+    {
+        public PlaybackAudioMode Mode { get; set; }
+        public string Label { get; set; } = "";
+        public bool IsAvailable { get; set; }
+        public bool RequiresLogin { get; set; }
+        public bool RequiresPremium { get; set; }
+        public string Reason { get; set; } = "";
+    }
+
     public sealed class PlaybackInfo
     {
         public string Url { get; set; } = "";
@@ -55,20 +68,46 @@ namespace BiliXbox.Models
         public IReadOnlyList<string> BackupUrls { get; set; } = Array.Empty<string>();
         public string Quality { get; set; } = "";
         public int QualityId { get; set; }
+        // The effective output tier may be 4K SDR while the source remains a
+        // genuine HDR10 track. Never overwrite its server identity or metadata.
+        public int SourceQualityId { get; set; }
         public int RequestedQualityId { get; set; }
         // Response-level quality is advisory; QualityId comes from the chosen track.
         public int ServerQualityId { get; set; }
         public string VideoCodec { get; set; } = "";
+        public int VideoTrackIndex { get; set; } = -1;
         public int VideoWidth { get; set; }
         public int VideoHeight { get; set; }
         public long VideoBitrate { get; set; }
         public long AudioBitrate { get; set; }
+        public PlaybackAudioMode AudioMode { get; set; }
+        public PlaybackAudioMode RequestedAudioMode { get; set; }
+        public string AudioCodec { get; set; } = "";
+        public int AudioChannels { get; set; }
+        public int AudioSampleRate { get; set; }
+        public int AudioBitsPerSample { get; set; }
+        public string AudioNotice { get; set; } = "";
+        public string AudioCapabilityDiagnostic { get; set; } = "";
+        public IReadOnlyList<PlaybackAudioOption> AvailableAudioModes { get; set; } = Array.Empty<PlaybackAudioOption>();
+        // Same real video representation, standard AAC audio. Used once before
+        // lowering video quality when a Dolby/FLAC decode/playback attempt fails.
+        public PlaybackInfo AudioFallback { get; set; }
         public double VideoFrameRate { get; set; }
+        // Preserve the API declaration. Rates above the documented query range
+        // receive only a 60fps baseline proof plus an explicit native trial.
+        public double VideoFrameRateProbe { get; set; }
+        public bool RequiresNativeFrameRateValidation { get; set; }
+        public double VideoFrameRateNative { get; set; }
+        public bool NativeFrameRateVerified { get; set; }
+        public string FrameRateNotice { get; set; } = "";
         public bool HardwareHevcVerified { get; set; }
         public bool FourKDisplayVerified { get; set; }
         public string CapabilityDiagnostic { get; set; } = "";
+        public string PlaybackDiagnostic { get; set; } = "";
+        public PlaybackQualityFailure QualityFailure { get; set; }
         public bool Hdr10DisplayVerified { get; set; }
         public bool IsHdr10 { get; set; }
+        public bool UsesSdrToneMapping { get; set; }
         public int VideoBitsPerChannel { get; set; }
         // One compatible source from this same authorized response. Never points
         // back to the primary source, so playback failure cannot retry forever.
@@ -89,6 +128,7 @@ namespace BiliXbox.Models
         // the UI must omit them from the public quality list.
         public bool IsVisible { get; set; } = true;
         public bool IsCapabilityPending { get; set; }
+        public bool RequiresCompatibilityTrial { get; set; }
         // An advertised tier can be requested even when this response did not
         // include its track. IsAvailable describes the action, not a permission grant.
         public bool HasPlaybackSource { get; set; }

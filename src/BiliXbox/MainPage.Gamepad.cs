@@ -377,6 +377,7 @@ namespace BiliXbox
         private void RestoreHomeGamepadFocus()
         {
             if (_disposed || _watching || _creatorVisible || _libraryVisible || _liveVisible || _dialogOpen || _inputPaneVisible || _gamepadHomeFocusPending || _gamepadHomeFeedReplacing || _homeScrollPending) return;
+            if (RestoreHomeFeedPageFocus()) return;
             var current = FocusManager.GetFocusedElement() as Control;
             if (!_gamepadHomeInitialFocusDone)
             {
@@ -406,6 +407,9 @@ namespace BiliXbox
 
         private void NavigateGamepadHome(PlayerDirection direction)
         {
+            // A deliberate move made while data is loading owns focus after
+            // completion; the old request must not pull it back to card zero.
+            if (_gamepadHomeFeedReplacing) _homeFeedFocusAnchor = null;
             _gamepadHomeInitialFocusDone = true;
             DisablePointerCursor();
             var current = FocusManager.GetFocusedElement() as Control;
@@ -523,15 +527,24 @@ namespace BiliXbox
             _gamepadHomeInitialFocusDone = false;
             if (_disposed || _watching || _creatorVisible || _libraryVisible || _dialogOpen || _inputPaneVisible) return;
             // Move focus out before Clear recycles the old focused container.
-            // Search remains usable while a slow feed request is pending.
-            FocusGamepadHomeControl(SearchEntryButton);
+            // Keep a section change on its tab until the new result is ready.
+            FocusGamepadHomeControl(_homeFeedFocusAnchor ?? SearchEntryButton);
         }
 
         private void CompleteHomeFeedReplacement()
         {
             _gamepadHomeFeedReplacing = false;
+            bool movedDuringLoad = _homeFeedFocusAnchor == null && _gamepadHomeInitialFocusDone;
+            _homeFeedFocusAnchor = null;
+            if (movedDuringLoad)
+            {
+                _pendingHomeFeedPosition = null;
+                RestoreHomeGamepadFocus();
+                return;
+            }
             _gamepadHomeIndex = 0;
             _gamepadHomeInitialFocusDone = false;
+            if (RestoreHomeFeedPageFocus()) return;
             RestoreHomeGamepadFocus();
         }
 
@@ -721,6 +734,7 @@ namespace BiliXbox
                 // the next row scrolls its own focus visual into view.
                 var options = new List<Control> { SettingsCloseButton, QualityAccountButton };
                 foreach (var item in QualityOptions.Children) if (item is Button button) options.Add(button);
+                foreach (var item in AudioOptions.Children) if (item is Button button) options.Add(button);
                 options.Add(PartSelector);
                 var available = new List<Control>();
                 foreach (var option in options) if (option.IsEnabled && option.Visibility == Visibility.Visible) available.Add(option);
@@ -905,6 +919,7 @@ namespace BiliXbox
             {
                 var button = control as Button;
                 if (button != null && QualityOptions.Children.Contains(button)) { Quality_Click(button, args); return; }
+                if (button != null && AudioOptions.Children.Contains(button)) { Audio_Click(button, args); return; }
                 if (TryActivateCommentControl(control)) return;
                 // The reply header's close action has no x:Name in older layouts.
                 if (button != null && IsGamepadDescendant(button, ReplySide) && button.FontFamily.Source == "Segoe MDL2 Assets")

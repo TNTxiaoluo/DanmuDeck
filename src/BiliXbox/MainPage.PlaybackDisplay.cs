@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,17 +21,25 @@ namespace BiliXbox
 
         private async Task<PlaybackInfo> PrepareSourceDisplayAsync(PlaybackInfo playback, CancellationToken token)
         {
-            token.ThrowIfCancellationRequested();
-            if (_displaySuspended) throw new OperationCanceledException(token);
-            if (await PlaybackDisplay.PrepareAsync(playback, token)) return playback;
-            token.ThrowIfCancellationRequested();
-            string displayFailure = PlaybackDisplay.FailureReason;
-            var fallback = playback.CodecFallback;
-            if (fallback != null && !fallback.IsHdr10 && await PlaybackDisplay.PrepareAsync(fallback, token))
+            var visited = new HashSet<PlaybackInfo>();
+            string failure = "";
+            while (playback != null && visited.Count < 16 && visited.Add(playback))
             {
-                fallback.QualityNotice = (string.IsNullOrWhiteSpace(displayFailure) ? "当前显示模式无法启用。" : displayFailure)
-                    + "已回退到实际 " + fallback.Quality + " SDR 播放源。";
-                return fallback;
+                token.ThrowIfCancellationRequested();
+                if (_displaySuspended) throw new OperationCanceledException(token);
+                if (await PlaybackDisplay.PrepareAsync(playback, token))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (_displaySuspended) throw new OperationCanceledException(token);
+                    if (failure.Length > 0) playback.QualityNotice = failure + "改用实际 " + playback.Quality
+                        + (playback.UsesSdrToneMapping ? " SDR（HDR10 源，系统色调映射）" : playback.IsHdr10 ? " HDR10" : " SDR") + " 播放源。";
+                    return playback;
+                }
+                token.ThrowIfCancellationRequested();
+                failure = string.IsNullOrWhiteSpace(PlaybackDisplay.FailureReason) ? "当前轨道的显示模式无法启用。" : PlaybackDisplay.FailureReason;
+                playback.QualityFailure = PlaybackQualityFailure.DisplayFailed;
+                RecordPlaybackTrack("display-prepare-failed", playback);
+                playback = playback.CodecFallback;
             }
             throw new InvalidOperationException("当前显示器无法启用此画质的输出模式，请选择较低画质或 SDR 视频。");
         }
@@ -69,10 +78,11 @@ namespace BiliXbox
                 if (!prepared)
                 {
                     var fallback = playback.CodecFallback;
-                    if (fallback != null && !fallback.IsHdr10 && _video != null)
+                    if (fallback != null && _video != null)
                     {
+                        playback.CodecFallback = null;
                         fallback.QualityNotice = (string.IsNullOrWhiteSpace(PlaybackDisplay.FailureReason) ? "当前显示模式无法恢复。" : PlaybackDisplay.FailureReason)
-                            + "已回退到实际 " + fallback.Quality + " SDR 播放源。";
+                            + "改用实际 " + fallback.Quality + (fallback.UsesSdrToneMapping ? " SDR（HDR10 源，系统色调映射）" : fallback.IsHdr10 ? " HDR10" : " SDR") + " 播放源。";
                         await LoadPartAsync(_currentCid, fallback.QualityId, true, fallback);
                         return;
                     }
@@ -104,16 +114,19 @@ namespace BiliXbox
 
         public async Task SuspendPlaybackAsync()
         {
+            var historyFlush = FlushPlaybackHistoryAsync();
             _displaySuspended = true;
             ++_partGeneration;
             Cancel(ref _partCts);
             SuspendPlayback();
+            await historyFlush;
             await ResetPlaybackDisplayAsync();
         }
 
         private static void MergePlaybackQualities(PlaybackInfo current, PlaybackInfo latest)
         {
             current.CapabilityDiagnostic = latest.CapabilityDiagnostic;
+            current.AvailableAudioModes = latest.AvailableAudioModes;
             var qualities = latest.AvailableQualities.ToList();
             var playing = qualities.FirstOrDefault(item => item.Id == current.QualityId);
             if (playing == null)

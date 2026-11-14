@@ -35,6 +35,7 @@ namespace BiliXbox.DanmakuSettingsTests
             CloudRuleTypesAndRegexBounds();
             UnicodeDuplicateKeys();
             DisplayAreaAndDensity();
+            IndependentScrollingAndFixedLayers();
             ImmediateSettingsAndRuleReplacement();
             CollisionPolicyAndPoolBudget();
             SpeedAndPausedWorkBudget();
@@ -134,6 +135,81 @@ namespace BiliXbox.DanmakuSettingsTests
                     "Rendered text escaped the quarter-screen area.");
             }
         }
+        private static void IndependentScrollingAndFixedLayers()
+        {
+            // A real viewport must expose the first AND final configured row to
+            // moving comments, even with both fixed categories already visible.
+            foreach (double fraction in new[] { 0.25, 0.5, 0.75, 1.0 })
+            foreach (double fontScale in new[] { 0.65, 1.0, 1.8 })
+            foreach (bool avoidCenter in new[] { false, true })
+            {
+                var settings = new DanmakuSettings(areaFraction: fraction, fontScale: fontScale,
+                    densityLimit: 64, avoidCenter: avoidCenter, mergeDuplicates: false);
+                using (var overlay = Surface(settings))
+                {
+                    double lineHeight = Math.Ceiling(Math.Max(20, Math.Min(30, 720 / 25d)) * fontScale * 1.5);
+                    var allowed = DanmakuLaneLayout.AllowedRows(720, lineHeight, settings);
+                    var timeline = new List<DanmakuItem> { Item(0, "fixed-top", 5), Item(0, "fixed-bottom", 4) };
+                    for (int i = 0; i < allowed.Count; ++i)
+                        timeline.Add(Item((i / 8 + 1) / 10d, "move-" + i));
+                    overlay.Load(timeline); overlay.Update(TimeSpan.Zero, false);
+                    for (int batch = 1; batch <= (allowed.Count + 7) / 8; ++batch)
+                        overlay.Update(TimeSpan.FromSeconds(batch / 10d), false);
+                    var rows = new HashSet<double>();
+                    TextBlock top = null, bottom = null;
+                    foreach (var block in overlay.Children)
+                    {
+                        if (block.Text == "fixed-top") top = block;
+                        else if (block.Text == "fixed-bottom") bottom = block;
+                        else
+                        {
+                            Check(rows.Add(block.Top), "Moving comments collided within their own layer.");
+                            Check(Canvas.GetZIndex(block) == 0, "A scrolling comment escaped the lower layer.");
+                        }
+                    }
+                    Check(rows.Count == allowed.Count, "Fixed comments or the old 12-row cap removed scrolling rows.");
+                    foreach (double y in allowed)
+                        Check(rows.Contains(y), "A configured scrolling row was unavailable while fixed comments were visible.");
+                    Check(top != null && bottom != null && rows.Contains(top.Top) && rows.Contains(bottom.Top),
+                        "The first/final scrolling rows could not coexist with fixed comments.");
+                    Check(Canvas.GetZIndex(top) > 0 && Canvas.GetZIndex(bottom) > 0,
+                        "Earlier fixed comments were not explicitly above later scrolling comments.");
+                }
+            }
+
+            // Verify the opposite admission order: a full scrolling layer must
+            // not block fixed comments arriving later, while fixed-to-fixed
+            // collision protection remains enabled.
+            using (var overlay = Surface(new DanmakuSettings(densityLimit: 64, mergeDuplicates: false)))
+            {
+                var timeline = new List<DanmakuItem>();
+                for (int i = 0; i < 16; ++i) timeline.Add(Item(i < 8 ? 0 : 0.1, "moving " + i));
+                overlay.Load(timeline); overlay.Update(TimeSpan.Zero, false);
+                overlay.Update(TimeSpan.FromSeconds(0.1), false);
+                Check(overlay.Children.Count == 16, "The scrolling plane did not fill the full 720p region.");
+                overlay.Add(Item(0.1, "late-top", 5)); overlay.Add(Item(0.1, "late-bottom", 4));
+                overlay.Add(Item(0.1, "late-top-2", 5));
+                var top = overlay.Children.Find(block => block.Text == "late-top");
+                var bottom = overlay.Children.Find(block => block.Text == "late-bottom");
+                var top2 = overlay.Children.Find(block => block.Text == "late-top-2");
+                Check(top != null && bottom != null && top2 != null,
+                    "Existing scrolling comments prevented later fixed messages from being admitted.");
+                Check(top.Top == 0 && bottom.Top == 660 && top2.Top != top.Top,
+                    "Fixed comments lost their edge positioning or same-layer collision protection.");
+                Check(Canvas.GetZIndex(top) == 1 && Canvas.GetZIndex(bottom) == 1,
+                    "Fixed messages arriving over scrolling messages were not on the higher plane.");
+
+                // The text pool reuses the same controls across categories.
+                foreach (int mode in new[] { 5, 1, 4, 1 })
+                {
+                    overlay.Reset(); overlay.Load(new[] { Item(0, "pooled", mode) });
+                    overlay.Update(TimeSpan.Zero, false);
+                    Check(overlay.Children.Count == 1 && Canvas.GetZIndex(overlay.Children[0]) == (mode == 1 ? 0 : 1),
+                        "A pooled element retained another category's stacking order.");
+                }
+            }
+        }
+
         private static void ImmediateSettingsAndRuleReplacement()
         {
             using (var overlay = Surface())
