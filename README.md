@@ -23,6 +23,16 @@
 
 平台接口、账户权限、网络条件和设备能力会影响功能可用性。4K/HDR10 需要兼容的 Xbox、显示设备、系统配置及真实播放源；Xbox 的 `hevcPlayback` 还是需要商店单独审批的受限能力。硬件测试和纯代码测试的结果应分别看待。
 
+## 下载
+
+<a href="https://apps.microsoft.com/detail/9N4MBQJC77DD">
+  <img
+    src="https://get.microsoft.com/images/en-us%20dark.svg"
+    alt="Get it from Microsoft Store"
+    width="200"
+  />
+</a>
+
 ## 快速开始
 
 需要 Windows、**Visual Studio 2022 UWP 开发工具**（C# UWP、.NET Native）、**Windows 10 SDK 10.0.19041.0** 和 **PowerShell 7**。
