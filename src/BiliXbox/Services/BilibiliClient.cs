@@ -1652,7 +1652,8 @@ namespace BiliXbox.Services
                         || double.IsNaN(time) || double.IsInfinity(time) || time < 0) continue;
                     // Advanced/BAS payloads are JSON/script data, not ordinary overlay text.
                     if (mode != 1 && mode != 4 && mode != 5 && mode != 6) continue;
-                    items.Add(new DanmakuItem { Time = time, Mode = mode, Color = color & 0xffffff, Text = element.Value, SenderHash = fields.Length > 6 ? fields[6].Trim() : "" });
+                    int fontSize; if (!int.TryParse(fields[2], out fontSize) || (fontSize != 18 && fontSize != 25 && fontSize != 36)) fontSize = 25;
+                    items.Add(new DanmakuItem { Time = time, Mode = mode, FontSize = fontSize, Color = color & 0xffffff, Text = element.Value, SenderHash = fields.Length > 6 ? fields[6].Trim() : "" });
                 }
                 return items.OrderBy(item => item.Time).ToList();
             }
@@ -1663,7 +1664,7 @@ namespace BiliXbox.Services
         }
 
         public async Task SendDanmakuAsync(long aid, long cid, string text, TimeSpan position,
-            int color = 16777215, int mode = 1, CancellationToken ct = default(CancellationToken))
+            int color = 16777215, int mode = 1, CancellationToken ct = default(CancellationToken), int fontSize = 25)
         {
             CheckId(aid, nameof(aid));
             CheckId(cid, nameof(cid));
@@ -1672,16 +1673,26 @@ namespace BiliXbox.Services
             if (text.Length > 100) throw new ArgumentException("弹幕最多100个字符，实际限制由账号等级决定。", nameof(text));
             if (position < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(position));
             if (color < 0 || color > 0xffffff) throw new ArgumentOutOfRangeException(nameof(color));
+            if (color != 0xffffff && CurrentUser?.IsPremium != true) throw new BilibiliApiException(-403, "彩色弹幕需要大会员。");
+            if (fontSize != 18 && fontSize != 25 && fontSize != 36) throw new ArgumentOutOfRangeException(nameof(fontSize));
             if (mode != 1 && mode != 4 && mode != 5) throw new ArgumentException("仅支持滚动、底部和顶部弹幕。", nameof(mode));
             var query = new Dictionary<string, string> { ["csrf"] = csrf, ["web_location"] = "1315873" };
+            long accountMid = CurrentUser?.Mid ?? 0; string sessionCookie = _cookies.GetCookieValue("SESSDATA");
+            Action ensureAccount = () => {
+                ct.ThrowIfCancellationRequested();
+                if (!IsLoggedIn || CurrentUser?.Mid != accountMid || _cookies.GetCookieValue("SESSDATA") != sessionCookie || _cookies.GetCookieValue("bili_jct") != csrf)
+                    throw new BilibiliApiException(-101, "登录状态已改变，请重新发送弹幕。");
+            };
             var signed = await SignedQueryAsync(query, ct);
+            ensureAccount();
             var root = await PostJsonAsync(Api + "/x/v2/dm/post?" + signed, new Dictionary<string, string>
             {
                 ["type"] = "1", ["oid"] = Invariant(cid), ["aid"] = Invariant(aid), ["msg"] = text.Trim(),
                 ["progress"] = Invariant((long)position.TotalMilliseconds), ["color"] = Invariant(color),
-                ["fontsize"] = "25", ["pool"] = "0", ["mode"] = Invariant(mode),
+                ["fontsize"] = Invariant(fontSize), ["pool"] = "0", ["mode"] = Invariant(mode),
                 ["rnd"] = Invariant(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000), ["csrf"] = csrf
             }, ct);
+            ensureAccount();
             RequireData(root);
         }
 

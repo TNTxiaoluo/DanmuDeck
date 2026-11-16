@@ -178,6 +178,7 @@ namespace BiliXbox
 
         private void ReleaseRawGamepadInput()
         {
+            ResetTemporaryPlaybackSpeed();
             var frame = _rawGamepadInput.Sample(_gamepadClock.Elapsed, null, GamepadInputButtons.None, false);
             if (frame.ConfirmReleased || _playerInput.ConfirmHeld) _playerInput.ConfirmKeyUp(DateTimeOffset.UtcNow);
             _gamepadDirectionMapper.Reset();
@@ -275,6 +276,7 @@ namespace BiliXbox
                     DispatchPlayerGamepadKey(VirtualKey.GamepadA, false);
                 }
                 PollAuxiliaryGamepad(reading, enabled);
+                PollPlaybackSpeed(reading, enabled);
                 if (enabled && !_watching && !_creatorVisible && !_libraryVisible && !_liveVisible) EnsureGamepadHomeFocus();
                 if (enabled) DisablePointerCursor();
                 UpdateGamepadFocusOutline();
@@ -364,8 +366,10 @@ namespace BiliXbox
         }
 
         private Control[] HomeHeaderControls => new Control[] { LiveSectionButton, HomeButton, PopularSectionButton,
-            AnimationSectionButton, FilmSectionButton, HeaderSearchButton, AccountButton, HelpButton };
-        private Control[] HomeSearchControls => new Control[] { SearchEntryButton, SearchSubmitButton };
+            AnimationSectionButton, FilmSectionButton, HeaderSearchButton, HomeHistoryButton, HomeFavoritesButton, AccountButton, HelpButton };
+        private Control[] HomeSearchControls => new Control[] { FilmGenreButton };
+        private Control[] HomeContentHeaderControls => SearchModes.Visibility == Visibility.Visible ? HomeModeControls
+            : AvailableGamepadHomeControls(HomeSearchControls).Count > 0 ? HomeSearchControls : HomeHeaderControls;
         private Control[] HomeModeControls => new Control[] { SearchVideosButton, SearchCreatorButton };
         private Control[] HomePagerControls => new Control[] { PreviousPage, NextPage, RefreshFeedButton };
 
@@ -386,7 +390,7 @@ namespace BiliXbox
                     _gamepadHomeInitialFocusDone = true;
                     FocusGamepadHomeVideo(0);
                 }
-                else if (!ReferenceEquals(current, SearchEntryButton)) FocusGamepadHomeControl(SearchEntryButton);
+                else if (!ReferenceEquals(current, HeaderSearchButton)) FocusGamepadHomeControl(HeaderSearchButton);
                 return;
             }
             if (ReferenceEquals(current, HomeResultGrid) && HomeResultGrid.Items.Count > 0)
@@ -402,7 +406,7 @@ namespace BiliXbox
                 return;
             }
             if (HomeResultGrid.Items.Count > 0) FocusGamepadHomeVideo(Math.Min(_gamepadHomeIndex, HomeResultGrid.Items.Count - 1));
-            else FocusGamepadHomeControl(SearchEntryButton);
+            else FocusGamepadHomeControl(HeaderSearchButton);
         }
 
         private void NavigateGamepadHome(PlayerDirection direction)
@@ -426,7 +430,7 @@ namespace BiliXbox
                 else if (direction == PlayerDirection.Up)
                 {
                     if (index >= columns) FocusGamepadHomeVideo(index - columns);
-                    else FocusGamepadHomeGroup(SearchModes.Visibility == Visibility.Visible ? HomeModeControls : HomeSearchControls, current);
+                    else FocusGamepadHomeGroup(HomeContentHeaderControls, current);
                 }
                 else if ((row + 1) * columns < count) FocusGamepadHomeVideo(Math.Min(count - 1, index + columns));
                 else FocusGamepadHomeGroup(HomePagerControls, current);
@@ -455,7 +459,12 @@ namespace BiliXbox
             bool up = direction == PlayerDirection.Up;
             if (ContainsGamepadControl(HomeHeaderControls, current))
             {
-                if (!up) FocusGamepadHomeGroup(HomeSearchControls, current);
+                if (!up)
+                {
+                    if (AvailableGamepadHomeControls(HomeSearchControls).Count > 0) FocusGamepadHomeGroup(HomeSearchControls, current);
+                    else if (SearchModes.Visibility == Visibility.Visible) FocusGamepadHomeGroup(HomeModeControls, current);
+                    else FocusGamepadHomeVideoOrPager(current, false);
+                }
             }
             else if (ContainsGamepadControl(HomeSearchControls, current))
             {
@@ -465,13 +474,13 @@ namespace BiliXbox
             }
             else if (ContainsGamepadControl(HomeModeControls, current))
             {
-                if (up) FocusGamepadHomeGroup(HomeSearchControls, current);
+                if (up) FocusGamepadHomeGroup(AvailableGamepadHomeControls(HomeSearchControls).Count > 0 ? HomeSearchControls : HomeHeaderControls, current);
                 else FocusGamepadHomeVideoOrPager(current, false);
             }
             else if (ContainsGamepadControl(HomePagerControls, current) && up)
             {
                 if (HomeResultGrid.Items.Count > 0) FocusGamepadHomeVideoOrPager(current, true);
-                else FocusGamepadHomeGroup(SearchModes.Visibility == Visibility.Visible ? HomeModeControls : HomeSearchControls, current);
+                else FocusGamepadHomeGroup(HomeContentHeaderControls, current);
             }
         }
 
@@ -528,7 +537,7 @@ namespace BiliXbox
             if (_disposed || _watching || _creatorVisible || _libraryVisible || _dialogOpen || _inputPaneVisible) return;
             // Move focus out before Clear recycles the old focused container.
             // Keep a section change on its tab until the new result is ready.
-            FocusGamepadHomeControl(_homeFeedFocusAnchor ?? SearchEntryButton);
+            FocusGamepadHomeControl(_homeFeedFocusAnchor ?? HeaderSearchButton);
         }
 
         private void CompleteHomeFeedReplacement()
@@ -665,26 +674,30 @@ namespace BiliXbox
                     OpenGamepadHomeUser(user);
                     return;
                 }
-                if (!IsNavigableGamepadHomeControl(control)) control = SearchEntryButton;
+                if (!IsNavigableGamepadHomeControl(control)) control = HeaderSearchButton;
                 var args = new RoutedEventArgs();
                 if (control == HomeButton) Home_Click(control, args);
                 else if (Array.IndexOf(SectionButtons, control) >= 0) Section_Click(control, args);
-                else if (control == HeaderSearchButton || control == SearchEntryButton) SearchFocus_Click(control, args);
+                else if (control == HeaderSearchButton) SearchFocus_Click(control, args);
                 else if (control == SearchSubmitButton) Search_Click(control, args);
                 else if (control == AccountButton) Account_Click(control, args);
+                else if (control == HomeHistoryButton) HomeHistory_Click(control, args);
+                else if (control == HomeFavoritesButton) HomeFavorites_Click(control, args);
                 else if (control == HelpButton) Help_Click(control, args);
                 else if (control == SearchVideosButton) SearchVideos_Click(control, args);
                 else if (control == SearchCreatorButton) SearchCreator_Click(control, args);
                 else if (control == PreviousPage) PreviousPage_Click(control, args);
                 else if (control == NextPage) NextPage_Click(control, args);
                 else if (control == RefreshFeedButton) Refresh_Click(control, args);
+                else if (control == FilmGenreButton) FilmGenre_Click(control, args);
             }
             finally { _dispatchingPlayerAction = false; }
         }
 
         private async void OpenGamepadHomeVideo(VideoItem item)
         {
-            try { await OpenVideoAsync(item.Bvid, item.Title); }
+            try { if (item is AccountLibraryItem season && season.IsSeason) await ShowEpisodeChoicesAsync(season);
+                else await OpenVideoAsync(item.Bvid, item.Title); }
             catch (Exception ex) { if (!_disposed) SetStatus("打开视频失败：" + Friendly(ex)); }
         }
 
@@ -735,6 +748,7 @@ namespace BiliXbox
                 var options = new List<Control> { SettingsCloseButton, QualityAccountButton };
                 foreach (var item in QualityOptions.Children) if (item is Button button) options.Add(button);
                 foreach (var item in AudioOptions.Children) if (item is Button button) options.Add(button);
+                options.AddRange(_experienceOptions);
                 options.Add(PartSelector);
                 var available = new List<Control>();
                 foreach (var option in options) if (option.IsEnabled && option.Visibility == Visibility.Visible) available.Add(option);
@@ -896,6 +910,7 @@ namespace BiliXbox
         private void ActivateGamepadDrawerControl(Control control)
         {
             if (control == null || !control.IsEnabled) return;
+            if (_experienceOptions.Contains(control) && control.Tag is Action experienceAction) { experienceAction(); return; }
             var args = new RoutedEventArgs();
             if (control == SettingsCloseButton || control == CommentsCloseButton || control == RepliesCloseButton || control == DanmakuSettingsCloseButton) DrawerClose_Click(control, args);
             else if (control == DanmakuCloudSyncButton) DanmakuCloudSync_Click(control, args);
@@ -962,6 +977,7 @@ namespace BiliXbox
 
         private void UpdateGamepadFocusOutline()
         {
+            if (_pausedRecommendationsVisible) { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
             if (_creatorVisible || _libraryVisible || _liveVisible || _disposed || !_gamepadWindowActive || !_gamepadWindowVisible ||
                 _dialogOpen || _inputPaneVisible || (_watching && _playerInput.Mode != PlayerInputMode.Controls))
             { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
@@ -1001,6 +1017,7 @@ namespace BiliXbox
             if (selected == null || !selected.IsEnabled || selected.Visibility != Visibility.Visible ||
                 selected.ActualWidth <= 0 || selected.ActualHeight <= 0)
             { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
+            if (ReferenceEquals(selected, RefreshFeedButton)) { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
 
             try
             {

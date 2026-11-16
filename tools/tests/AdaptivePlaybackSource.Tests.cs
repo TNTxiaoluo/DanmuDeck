@@ -215,6 +215,11 @@ namespace BiliXbox.AdaptiveSourceTests
             Check(diagnostics.Last().Contains("download-failed id=21 type=3 httpStatus=503 hresult=0x")
                 && diagnostics.Last().Contains("receivedBytes=99 timing=unavailable")
                 && owner.TotalDownloadedBytes==long.MaxValue, "failed requests expose status/partial-byte facts without changing completed-byte accounting");
+            Check(owner.DownloadFailurePending && owner.TransportDiagnostic.Contains("lastHttp=503")
+                && !owner.TransportDiagnostic.Contains("fixture-diagnostic-secret"),
+                "terminal source classification uses bounded status/counter facts without native messages or signed URLs");
+            native.Complete(new AdaptiveMediaSourceDownloadCompletedEventArgs { RequestId=23 });
+            Check(!owner.DownloadFailurePending, "successful native completion clears unresolved transport failure");
             Check(diagnostics.All(value=>!value.Contains("https://")&&!value.Contains("token=")
                 && !value.Contains("fixture-diagnostic-secret")&&!value.Contains("timing fixture secret")),
                 "no media URLs, signed queries, native exception messages or subscriber messages enter request telemetry");

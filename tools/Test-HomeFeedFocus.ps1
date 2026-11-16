@@ -18,6 +18,9 @@ $methods = @(
     'CancelGamepadHomeFocus', 'RestoreHomeGamepadFocus', 'NavigateGamepadHome'
 )
 $production = ''
+$taskHeader = [regex]::Match($source, '(?s)private Control\[\] HomeContentHeaderControls =>.*?;')
+if (-not $taskHeader.Success) { throw 'Production compact header routing missing.' }
+$production += $taskHeader.Value + [Environment]::NewLine
 foreach ($name in $methods) {
     $match = [regex]::Match($source, '(?m)^        private void ' + [regex]::Escape($name) + '\([^\r\n]*\)\s*\{')
     if (-not $match.Success) { throw "Production method missing: $name" }

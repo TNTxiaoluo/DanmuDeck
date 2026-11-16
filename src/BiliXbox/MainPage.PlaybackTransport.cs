@@ -22,6 +22,7 @@ namespace BiliXbox
         private bool _bufferResumeInFlight;
         private int _bufferResumeRevision;
         private DateTimeOffset _nextTransportSample;
+        private DateTimeOffset _nextWaitingDiagnostic;
 
         private bool IsWaitingForPlaybackBuffer => _wantsPlayback && _bufferingPolicy.Waiting;
 
@@ -39,6 +40,7 @@ namespace BiliXbox
             _bufferedPlaybackSeconds = -1;
             _bufferSamplePosition = 0;
             _nextTransportSample = DateTimeOffset.MinValue;
+            _nextWaitingDiagnostic = DateTimeOffset.MinValue;
         }
 
         private void ResetPlaybackBuffering()
@@ -101,6 +103,16 @@ namespace BiliXbox
             bool active = _watching && _wantsPlayback && _media.Source != null && !_switchingPlaybackRoute
                 && _partCts != null && !_partCts.IsCancellationRequested;
             bool blocked = _seeking || _dialogOpen || _inputPaneVisible || _creatorVisible || _libraryVisible;
+            if (active && waiting && now >= _nextWaitingDiagnostic)
+            {
+                _nextWaitingDiagnostic = now.AddSeconds(10);
+                RecordPlaybackTrack("transport-wait", _playback,
+                    " generation=" + _partGeneration + " sourceLoading=" + _sourceLoading
+                    + " nativeState=" + session.PlaybackState + " displaySuspended=" + _displaySuspended
+                    + BufferDiagnostic(session.Position.TotalSeconds, _bufferedPlaybackSeconds)
+                    + " " + (_adaptivePlayback?.TransportDiagnostic ?? "transport=mp4")
+                    + " routeAttempts=" + _playbackRecovery.Attempts + " pipelineAttempts=" + _pipelineRecovery.Attempts);
+            }
             ApplyPlaybackBuffering(active && !_sourceLoading && !_displaySuspended, blocked);
             blocked = blocked || _bufferResumeInFlight;
             // A frozen clock with ample playable data is distinct from network
@@ -121,7 +133,8 @@ namespace BiliXbox
             }
             if (_playbackRecovery.ShouldSwitch(now, session.Position,
                 active, waiting, blocked,
-                _bufferedPlaybackSeconds, HasAlternatePlaybackRoutes))
+                _bufferedPlaybackSeconds, HasAlternatePlaybackRoutes,
+                (_adaptivePlayback?.CurrentDownloadBytesPerSecond ?? _activeDownloadSpeed?.CurrentDownloadBytesPerSecond ?? 0) > 0))
                 _ = RecoverPlaybackAsync();
         }
 

@@ -333,6 +333,19 @@ namespace BiliXbox.PlaybackDisplayTests
         }
         private static async Task RepeatedPreparation()
         {
+            var currentSdr = Mode(fps:59.94);
+            var currentDevice = Device(Mode(), currentSdr); currentDevice.CurrentMode = currentSdr;
+            var reuse = new Services.PlaybackDisplayController();
+            Check(await reuse.PrepareAsync(Stream(), CancellationToken.None) && currentDevice.Requests == 0,
+                "compatible current59.94 SDR is kept even when60Hz enumerates first");
+            var currentHdr = Mode(fps:59.94,hdr:true);
+            currentDevice = Device(currentHdr);
+            reuse = new Services.PlaybackDisplayController();
+            Check(await reuse.PrepareAsync(Stream(hdr:true),CancellationToken.None), "establish owned59.94 HDR");
+            currentDevice.Modes.Insert(0,Mode(hdr:true));
+            Check(await reuse.PrepareAsync(Stream(hdr:true),CancellationToken.None) && currentDevice.Requests == 1,
+                "owned compatible HDR mode survives an enumeration order change without handshake");
+            await reuse.ResetAsync();
             var hdr = Mode(hdr: true);
             var device = Device(hdr, Mode());
             // The OS mode can initially compare equal while its EOTF is unknown.

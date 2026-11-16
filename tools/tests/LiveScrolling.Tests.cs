@@ -116,7 +116,8 @@ namespace BiliXbox.Controls
     {
         private enum Pane { None, Chat, Gifts, GiftAmount, GiftConfirm, Quality }
         private int _focusGeneration, _paneGeneration, _roomGeneration = 1, _selectedIndex;
-        private bool _editing, IsPlayingRoom;
+        private bool _editing, _categoryOpen, IsPlayingRoom;
+        private void NavigateLiveCategories(PlayerDirection direction) { }
         private Visibility Visibility = Visibility.Visible;
         private Pane _pane;
         private Control _lastFocus;

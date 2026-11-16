@@ -25,7 +25,7 @@ namespace BiliXbox.Controls
         private readonly Grid _root, _browse, _watch, _chrome, _drawer;
         private readonly GridView _rooms;
         private readonly TextBlock _notice, _pageText, _roomTitle, _roomMeta, _watchNotice, _drawerTitle, _drawerNotice;
-        private readonly Button _open, _refresh, _previous, _next, _leave, _play, _danmakuButton, _chatButton, _giftButton, _qualityButton, _closeDrawer, _send, _reconnectChat;
+        private readonly Button _open, _category, _refresh, _previous, _next, _leave, _play, _danmakuButton, _chatButton, _giftButton, _qualityButton, _closeDrawer, _send, _reconnectChat;
         private readonly StackPanel _drawerBody, _chatComposer;
         private readonly ScrollViewer _drawerScroll;
         private readonly ListView _messages;
@@ -76,10 +76,13 @@ namespace BiliXbox.Controls
             search.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             search.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             search.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            search.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _roomInput = Editor("输入直播间号或 live.bilibili.com 链接", "LiveRoomInput", 240);
             AttachEditor(_roomInput, true); search.Children.Add(_roomInput);
             _open = MakeButton("进入直播间", () => Run(OpenInputAsync), "LiveOpenRoomButton"); Add(search, _open, 0, 1);
-            _refresh = MakeButton("刷新", () => Run(() => LoadRoomsAsync(_page)), "LiveRefreshButton"); Add(search, _refresh, 0, 2);
+            _category = MakeButton("分类", () => Run(OpenLiveCategoriesAsync), "LiveCategoryButton"); Add(search, _category, 0, 2);
+            _category.MaxWidth = 250;
+            _refresh = MakeButton("刷新", () => Run(() => LoadRoomsAsync(_page)), "LiveRefreshButton"); Add(search, _refresh, 0, 3);
             _browse.Children.Add(search);
             _notice = Text("正在读取直播…", 14); _notice.TextWrapping = TextWrapping.Wrap; _notice.MaxLines = 2;
             _notice.Foreground = Brush(180, 242, 242, 247); Add(_browse, _notice, 1, 0);
@@ -176,6 +179,7 @@ namespace BiliXbox.Controls
             _chatComposer.Children.Add(_reconnectChat); _chatComposer.Children.Add(_chatInput); _chatComposer.Children.Add(_send); Add(_drawer, _chatComposer, 3, 0);
             _watch.Children.Add(_drawer); _root.Children.Add(_watch);
             TvFocusEffects.AttachShowHide(_drawer, 32, 0);
+            InitializeLiveCategories();
             PreviewKeyDown += NativeKeyDown; PreviewKeyUp += NativeKeyUp;
             _tick.Tick += Tick; Unloaded += (s, e) => StopRequests(); UpdateBrowseActions();
         }
@@ -192,6 +196,7 @@ namespace BiliXbox.Controls
         public void Hide() => StopRequests();
         public void StopRequests()
         {
+            CloseLiveCategories(false);
             ResetManualScrollState();
             Cancel(ref _browseCts); _browseBusy = false; _editing = false;
             LeaveRoom(false); ++_focusGeneration;
@@ -202,15 +207,15 @@ namespace BiliXbox.Controls
             var owner = _browseCts; _browseBusy = true; UpdateBrowseActions(); _notice.Text = "正在读取直播…";
             try
             {
-                var result = await _api.GetLiveRoomsAsync(Math.Max(1, page), owner.Token);
+                var result = await _api.GetLiveRoomsAsync(Math.Max(1, page), _parentAreaId, _areaId, owner.Token);
                 if (!BrowseCurrent(owner)) return;
                 ++_focusGeneration; _roomItems.Clear(); _rooms.Items.Clear();
                 foreach (var room in result.Items.Where(item => item != null && item.Id > 0))
                 { _roomItems.Add(room); _rooms.Items.Add(new LivePoster(room)); }
                 _page = Math.Max(1, result.Page); _hasMore = result.HasMore; _selectedIndex = 0;
                 _pageText.Text = "第 " + _page + " 页";
-                _notice.Text = _roomItems.Count == 0 ? "暂无直播，输入房间号也可直接进入。" : "直播推荐 · " + _roomItems.Count + " 个直播间";
-                if (!IsPlayingRoom && Visibility == Visibility.Visible) RestoreFocus();
+                _notice.Text = _roomItems.Count == 0 ? _areaLabel + " · 暂无直播，输入房间号也可直接进入。" : "直播" + _areaLabel + " · " + _roomItems.Count + " 个直播间";
+                if (!_categoryOpen && !IsPlayingRoom && Visibility == Visibility.Visible) RestoreFocus();
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { if (BrowseCurrent(owner)) _notice.Text = "直播列表加载失败：" + Friendly(ex) + "。可刷新重试或输入房间号。"; }

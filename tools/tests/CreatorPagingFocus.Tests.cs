@@ -77,7 +77,7 @@ namespace BiliXbox.CreatorPagingTests
         private readonly ListViewBase _videoList = new ListViewBase(), _dynamicList = new ListViewBase();
         private readonly List<VideoItem> _videos = new List<VideoItem>();
         private readonly TextBlock _pageLabel = new TextBlock();
-        private readonly Control _videosTab = new Control(-1), _write = new Control(-2);
+        private readonly Control _videosTab = new Control(-1), _write = new Control(-2), _dynamicsTab = new Control(-3);
         private readonly Dispatcher Dispatcher = new Dispatcher();
         private CancellationTokenSource _sessionCts = new CancellationTokenSource();
         private long _mid = 42;

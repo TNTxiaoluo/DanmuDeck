@@ -52,14 +52,16 @@ namespace BiliXbox.HomeFeedFocusTests
         private readonly Grid SearchModes = new Grid();
         private readonly Control HomeButton = new Control("home");
         private readonly Control SearchEntryButton = new Control("search entry");
+        private Control HeaderSearchButton => SearchEntryButton;
+        private bool _compactHome;
         private readonly Control SearchSubmitButton = new Control("search submit");
         private readonly Control SearchVideosButton = new Control("video mode");
         private readonly Control SearchCreatorButton = new Control("user mode");
         private readonly Control NextPage = new Control("next page");
         private readonly Control PreviousPage = new Control("previous page");
         private readonly Control RefreshFeedButton = new Control("refresh");
-        private Control[] HomeHeaderControls => new[] { HomeButton };
-        private Control[] HomeSearchControls => new[] { SearchEntryButton, SearchSubmitButton };
+        private Control[] HomeHeaderControls => _compactHome ? new[] { HomeButton, HeaderSearchButton } : new[] { HomeButton };
+        private Control[] HomeSearchControls => _compactHome ? new Control[0] : new[] { SearchEntryButton, SearchSubmitButton };
         private Control[] HomeModeControls => new[] { SearchVideosButton, SearchCreatorButton };
         private Control[] HomePagerControls => new[] { PreviousPage, NextPage, RefreshFeedButton };
         private int _videoFocusCalls, _lastFocusedIndex = -1;
@@ -168,6 +170,19 @@ namespace BiliXbox.HomeFeedFocusTests
             var footer = new MainPage(); footer.Fill(20); footer._gamepadHomeInitialFocusDone = true;
             footer.NextPage.Focus(FocusState.Keyboard); footer.NavigateGamepadHome(PlayerDirection.Up);
             Check(footer._lastFocusedIndex == 16, "Up from an unchanged page footer should retain normal bottom-row traversal.");
+            var compact = new MainPage(); compact._compactHome = true; compact.Fill(20);
+            compact.HomeButton.Focus(FocusState.Keyboard); compact.NavigateGamepadHome(PlayerDirection.Down);
+            Check(compact._lastFocusedIndex == 0, "Compact header goes directly to cards when the duplicate search row is absent.");
+            compact.NavigateGamepadHome(PlayerDirection.Up);
+            Check(compact._lastGroup == "home", "Up from the first row returns to visible header controls instead of an invisible search field.");
+            compact.SearchModes.Visibility = Visibility.Visible;
+            compact.FocusGamepadHomeVideo(0); compact.NavigateGamepadHome(PlayerDirection.Up);
+            Check(compact._lastGroup == "video mode", "Search results retain user/video mode filters in compact layout.");
+            compact.NavigateGamepadHome(PlayerDirection.Up);
+            Check(compact._lastGroup == "home", "Search filters skip absent search-entry controls when moving up.");
+            var emptyCompact = new MainPage(); emptyCompact._compactHome = true;
+            emptyCompact.RestoreHomeGamepadFocus();
+            Check(ReferenceEquals(FocusManager.Current,emptyCompact.HeaderSearchButton), "An empty feed still has a visible top search entry.");
             Console.WriteLine("PASS: " + _checks + " production feed replacement and direction-dispatch checks (UI calls substituted).");
         }
     }

@@ -10,10 +10,24 @@ namespace BiliXbox.Controls
 {
     public sealed partial class AccountLibraryView
     {
+        public void OpenHistory()
+        {
+            if (!HasAccount) return;
+            if (_state.Pane == LibraryPane.History) { RestoreFocus(); return; }
+            OpenSection(LibraryPane.History);
+        }
+
+        public void OpenFavorites()
+        {
+            if (!HasAccount) return;
+            if (_state.Pane == LibraryPane.Folders) { RestoreFocus(); return; }
+            OpenSection(LibraryPane.Folders);
+        }
+
         private void OpenSection(LibraryPane pane)
         {
             if (!HasAccount) return;
-            string title = pane == LibraryPane.History ? "播放历史" : pane == LibraryPane.Folders ? "收藏夹" : "追番追剧";
+            string title = pane == LibraryPane.WatchLater ? "稍后再看" : pane == LibraryPane.Activity ? "UP 动态" : pane == LibraryPane.History ? "播放历史" : pane == LibraryPane.Folders ? "收藏夹" : "追番追剧";
             Push(new ViewState { Pane = pane, Title = title }); Run(RefreshAsync);
         }
 
@@ -35,11 +49,14 @@ namespace BiliXbox.Controls
         {
             ++_openGeneration; _openingItem = false;
             RememberSelection(); CancelLoad(); _trail.Push(_state); _state = state; _lastFocus = null;
-            Render(); Focus(_refresh);
+            if (state.Pane == LibraryPane.Activity) BeginActivityVisit();
+            Render(); if (state.Pane == LibraryPane.Activity) RestoreActivityFocus(); else Focus(_refresh);
         }
 
         public bool Back()
         {
+            if (_state.Pane == LibraryPane.Activity && BackActivity()) return true;
+            if (_state.Pane == LibraryPane.Activity) EndActivityVisit();
             if (_trail.Count == 0) return false;
             ++_openGeneration; _openingItem = false;
             CancelLoad(); _state = _trail.Pop(); _lastFocus = null; Render(); RestoreFocus(); return true;
@@ -49,6 +66,13 @@ namespace BiliXbox.Controls
         {
             if (!EnsureSession() || _state.Pane == LibraryPane.Overview) return;
             var state = _state;
+            if (state.Pane == LibraryPane.Activity)
+            {
+                EnsureActivityReadAccount();
+                if (_authorPage == 0) await LoadActivityAuthorsAsync();
+                _ = RefreshActivityUnreadAsync(_activityCts, _accountMid);
+                return;
+            }
             if (state.Pane == LibraryPane.Folders)
             {
                 await LoadAsync(state, async token =>
@@ -88,7 +112,8 @@ namespace BiliXbox.Controls
             await LoadAsync(state, async token =>
             {
                 AccountLibraryPage page;
-                if (state.Pane == LibraryPane.History) page = await _api.GetHistoryAsync(previous?.NextCursor ?? "", token);
+                if (state.Pane == LibraryPane.WatchLater) page = await _api.GetWatchLaterAsync(previous?.NextPage ?? 1, token);
+                else if (state.Pane == LibraryPane.History) page = await _api.GetHistoryAsync(previous?.NextCursor ?? "", token);
                 else if (state.Pane == LibraryPane.Favorites) page = await _api.GetFavoriteItemsAsync(state.FolderId, previous?.NextPage ?? 1, token);
                 else page = await _api.GetFollowedSeasonsAsync(state.Drama, previous?.NextPage ?? 1, token);
                 return () =>
@@ -179,6 +204,8 @@ namespace BiliXbox.Controls
                 ClearAccount(); _subtitle.Text = "登录已失效，请返回后重新登录。"; Render(); return false;
             }
             if (_sessionCts == null || _sessionCts.IsCancellationRequested) _sessionCts = new CancellationTokenSource();
+            if (_state.Pane == LibraryPane.Activity && (_activityCts == null || _activityCts.IsCancellationRequested))
+            { Cancel(ref _activityCts); _activityCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token); }
             return true;
         }
 

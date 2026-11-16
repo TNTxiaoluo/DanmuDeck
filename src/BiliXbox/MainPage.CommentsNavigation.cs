@@ -33,13 +33,20 @@ namespace BiliXbox
 
         // Called by X independently of the current comment's length or index.
         // Writing fills a draft; only the separate Publish action posts it.
-        private bool TryOpenCommentComposer()
+        private bool TryOpenCommentComposer(bool replyToFocused = false)
         {
             if (!_watching || _playerUi.Drawer != PlayerDrawer.Comments || _dialogOpen || _inputPaneVisible) return false;
             if (!CommentInput.IsEnabled)
             { SetStatus("当前评论区暂不可写"); return true; }
             var current = FocusManager.GetFocusedElement() as Control;
             RememberCommentComposerPosition(current);
+            if (!_viewingReplies && !replyToFocused)
+            {
+                _dispatchingPlayerAction = true;
+                try { CommentEntry_Click(CommentInput, new RoutedEventArgs()); }
+                finally { _dispatchingPlayerAction = false; }
+                return true;
+            }
             var card = FindGamepadAncestor<CommentCard>(current, GamepadDrawerRoot);
             var row = FindGamepadAncestor<ListViewItem>(current, _viewingReplies ? ReplyList : CommentList);
             var item = card?.Item ?? row?.Content as CommentItem;
@@ -49,6 +56,8 @@ namespace BiliXbox
             if (item == null && _viewingReplies)
                 item = current == ReplyCommentInput || current == SendReplyCommentButton
                     ? _replyComposerTarget ?? _replyRoot : _replyRoot;
+            if (item == null && replyToFocused)
+            { SetStatus("请先选择要回复的评论"); return true; }
             if (item != null)
             {
                 if (!_viewingReplies)

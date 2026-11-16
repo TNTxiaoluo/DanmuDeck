@@ -19,6 +19,7 @@ namespace BiliXbox.PlaybackRecoveryTests
         public static void Run()
         {
             _assertions = 0;
+            DownloadProgressAndTerminalFailures();
             ShortWaitsAndProgress();
             EligibilityAndUnknownBuffer();
             PauseAndResume();
@@ -28,6 +29,22 @@ namespace BiliXbox.PlaybackRecoveryTests
             NewPlaybackGeneration();
             ClockRewind();
             Console.WriteLine("PASS: " + _assertions + " deterministic playback-recovery assertions (no network or device media).");
+        }
+
+        private static void DownloadProgressAndTerminalFailures()
+        {
+            var state = new Controls.PlaybackRecoveryState();
+            for (int time = 0; time < 40; ++time)
+                Check(!state.ShouldSwitch(At(time), Position(0), true, true, false, 0, true, true),
+                    "ongoing download must not be discarded merely because playable cache is still empty");
+            Check(!Sample(state,40) && !Sample(state,47.99) && Sample(state,48),
+                "stalled downloads still receive bounded recovery after eight seconds without progress");
+            Check(state.TrySwitchAfterFailure(At(49),true), "terminal network error may consume remaining same-track retry");
+            Check(!state.TrySwitchAfterFailure(At(50),true) && state.Attempts == 2,
+                "watchdog and terminal-error paths share one finite retry budget");
+            state.Reset();
+            Check(!state.TrySwitchAfterFailure(At(0),false) && state.Attempts == 0,
+                "missing alternate does not invent routes or consume attempts");
         }
 
         private static void ShortWaitsAndProgress()

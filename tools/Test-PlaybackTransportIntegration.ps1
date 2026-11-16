@@ -14,11 +14,12 @@ using BiliXbox.Controls;
 using BiliXbox.Models;
 using BiliXbox.Services;
 using Windows.UI.Xaml;
+using Windows.Media.Playback;
 '@ + [Environment]::NewLine
 foreach ($taskFile in @('src\BiliXbox\Models\ApiModels.cs', 'src\BiliXbox\Services\DownloadSpeedMeter.cs',
     'src\BiliXbox\Controls\PlaybackRecoveryState.cs', 'src\BiliXbox\Controls\PlaybackPipelineRecoveryState.cs',
     'src\BiliXbox\Services\PlaybackBufferingPolicy.cs',
-    'src\BiliXbox\MainPage.PlaybackTransport.cs', 'tools\tests\PlaybackTransportIntegration.Tests.cs')) {
+    'src\BiliXbox\MainPage.PlaybackTransport.cs', 'src\BiliXbox\MainPage.PlaybackFailures.cs', 'tools\tests\PlaybackTransportIntegration.Tests.cs')) {
     $taskSource += [regex]::Replace([IO.File]::ReadAllText((Join-Path $taskRoot $taskFile)), '(?m)^using [^;]+;\r?\n', '') + [Environment]::NewLine
 }
 Add-Type -TypeDefinition $taskSource -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414'

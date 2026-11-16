@@ -20,10 +20,12 @@ namespace BiliXbox
 
         private void PollAuxiliaryGamepad(GamepadReading reading, bool enabled)
         {
+            if (enabled && Math.Abs(reading.RightThumbstickY) < .2) _pausedPullReady = true;
+            PollViewingChord(reading, enabled);
             var extra = _gamepadAuxiliary.Sample(_gamepadClock.Elapsed, _activeGamepad,
                 (reading.Buttons & GamepadButtons.LeftShoulder) != 0,
                 (reading.Buttons & GamepadButtons.RightShoulder) != 0, reading.RightThumbstickY, enabled);
-            if (extra.SectionStep != 0)
+            if (extra.SectionStep > 0 && !_rawLb)
             {
                 if (IsSectionBrowseSurface) StepHomeSection(extra.SectionStep);
                 else SeekVideoShoulder(extra.SectionStep);
@@ -47,6 +49,7 @@ namespace BiliXbox
             => key == VirtualKey.GamepadRightThumbstickUp ? -1 : key == VirtualKey.GamepadRightThumbstickDown ? 1 : 0;
 
         private bool IsShoulderSeekSurface => _watching && !_creatorVisible && !_libraryVisible && !_liveVisible
+            && !_pausedRecommendationsVisible
             && !_disposed && !_dialogOpen && !_inputPaneVisible && !IsNativeGamepadEditorActive
             && _playerUi.Drawer == PlayerDrawer.None;
 
@@ -91,6 +94,8 @@ namespace BiliXbox
             if (_liveVisible) return LiveHub.ScrollBy(delta);
             if (_libraryVisible) return AccountLibrary.ScrollBy(delta);
             if (_creatorVisible) return CreatorHub.ScrollBy(delta);
+            if (_pausedRecommendationsVisible) return true;
+            if (delta > 24 && _pausedPullReady && CanOpenPausedRecommendations) { _pausedPullReady = false; _ = OpenPausedRecommendationsAsync(); return true; }
             if (!_watching)
             {
                 if (_gamepadHomeFeedReplacing) return false;

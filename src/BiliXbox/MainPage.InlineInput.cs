@@ -71,7 +71,8 @@ namespace BiliXbox
                 editor = InlineNativeTextInputSession.ReplaceEditor(SearchInput, 200);
                 SearchInput = editor;
                 editor.Visibility = Visibility.Visible;
-                SearchEntryButton.Visibility = Visibility.Collapsed;
+                SearchQueryLabel.Visibility = Visibility.Collapsed;
+                SearchSubmitButton.Visibility = Visibility.Visible;
                 submit = await ShowInlineTextInputAsync(editor, true);
             }
             finally
@@ -84,7 +85,8 @@ namespace BiliXbox
                     SearchQueryLabel.Text = string.IsNullOrWhiteSpace(SearchInput.Text)
                         ? "搜索视频或用户，支持 BV 号 / 视频链接" : SearchInput.Text;
                     SearchInput.Visibility = Visibility.Collapsed;
-                    SearchEntryButton.Visibility = Visibility.Visible;
+                    SearchSubmitButton.Visibility = Visibility.Collapsed;
+                    SearchQueryLabel.Visibility = _feedNavigation.IsSearch ? Visibility.Visible : Visibility.Collapsed;
                     if (!_disposed && wasWatching == _watching && wasCreator == _creatorVisible && wasLibrary == _libraryVisible && wasLive == _liveVisible)
                     {
                         Header.Visibility = header; Footer.Visibility = footer; HomeView.Visibility = home;
@@ -94,7 +96,8 @@ namespace BiliXbox
                         else if (wasLibrary) AccountLibrary.RestoreFocus();
                         else if (wasCreator) CreatorHub.RestoreFocus();
                         else if (wasWatching) { ShowControls(); FocusPlayerInput(); }
-                        else if (ReferenceEquals(FocusManager.GetFocusedElement(), SearchInput)) SearchEntryButton.Focus(FocusState.Programmatic);
+                        else if (ReferenceEquals(FocusManager.GetFocusedElement(), SearchInput)
+                            || ReferenceEquals(FocusManager.GetFocusedElement(), SearchSubmitButton)) HeaderSearchButton.Focus(FocusState.Programmatic);
                     }
                 }
             }

@@ -231,6 +231,7 @@ namespace BiliXbox.Models
         public string Text { get; set; } = "";
         public int Color { get; set; } = 16777215;
         public int Mode { get; set; } = 1;
+        public int FontSize { get; set; } = 25;
     }
 
     public sealed class QrLoginInfo

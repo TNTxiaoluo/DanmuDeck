@@ -231,6 +231,7 @@ namespace BiliXbox
 
         private void UpdateSectionButtons()
         {
+            FilmGenreButton.Visibility = !_feedNavigation.IsSearch && _feedNavigation.Section == HomeSection.Film ? Visibility.Visible : Visibility.Collapsed;
             for (int index = 0; index < SectionButtons.Length; ++index)
             {
                 var control = SectionButtons[index];
@@ -242,7 +243,7 @@ namespace BiliXbox
         }
 
         private static string SectionTitle(HomeSection section)
-            => section == HomeSection.Popular ? "热门" : section == HomeSection.Animation ? "动画分区"
+            => section == HomeSection.Popular ? "热门" : section == HomeSection.Animation ? "番剧"
                 : section == HomeSection.Film ? "影视分区" : section == HomeSection.Live ? "直播" : "推荐";
 
         private bool DispatchLiveSectionKey(Windows.System.VirtualKey key, bool repeat)

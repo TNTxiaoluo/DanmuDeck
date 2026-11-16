@@ -34,6 +34,7 @@ namespace BiliXbox.Controls
                     container.GotFocus += (s, e) => { Settle(container, true, true); focused?.Invoke(container.Content); };
                     container.LostFocus += (s, e) => Settle(container, false, true);
                     container.Unloaded += (s, e) => Settle(container, false, false);
+                    container.Loaded += (s, e) => Settle(container, container.FocusState != FocusState.Unfocused, false);
                 }
                 // A recycled container may still carry the lifted look of its previous item.
                 Settle(container, container.FocusState != FocusState.Unfocused, false);
@@ -42,6 +43,9 @@ namespace BiliXbox.Controls
 
         private static void Settle(Control container, bool lifted, bool animate)
         {
+            // The white focus frame is functional UI, independent of optional
+            // composition shadows/animations and their platform availability.
+            UpdateFocusRing(container, lifted);
             try
             {
                 var visual = ElementCompositionPreview.GetElementVisual(container);
@@ -77,6 +81,12 @@ namespace BiliXbox.Controls
             {
                 // Composition is decorative; focus and navigation never depend on it.
             }
+        }
+
+        private static void UpdateFocusRing(Control container, bool focused)
+        {
+            var ring = FindTagged(container, "TvFocusRing") as Border;
+            if (ring != null) ring.Opacity = focused ? 1 : 0;
         }
 
         // The card template's first element tagged "TvShadow" hosts a blurred

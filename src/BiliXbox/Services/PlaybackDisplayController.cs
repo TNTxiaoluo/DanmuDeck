@@ -32,6 +32,7 @@ namespace BiliXbox.Services
         internal bool Hdr10Active { get; private set; }
         internal bool FourKActive { get; private set; }
         internal string FailureReason { get; private set; } = "";
+        internal string Diagnostic { get; private set; } = "";
 
         internal async Task<bool> PrepareAsync(PlaybackInfo playback, CancellationToken ct)
         {
@@ -44,6 +45,7 @@ namespace BiliXbox.Services
                 ct.ThrowIfCancellationRequested();
                 Hdr10Active = FourKActive = false;
                 FailureReason = "";
+                Diagnostic = "action=platform-managed";
                 // Windows' normal media/display pipeline owns desktop output.
                 // Do not infer that it entered HDR from an Xbox capability flag.
                 if (!IsXbox) return true;
@@ -62,6 +64,7 @@ namespace BiliXbox.Services
                 bool highResolution = width > 1920 || height > 1080;
                 if (!hdr && !highResolution)
                 {
+                    Diagnostic = "action=default-for-hd owned=" + _ownsMode;
                     await ResetCoreAsync();
                     ct.ThrowIfCancellationRequested();
                     return !_ownsMode && resetVersion == Volatile.Read(ref _resetVersion);
@@ -110,7 +113,11 @@ namespace BiliXbox.Services
                             : requires4K ? "；请检查电视和显示选项 → 视频模式中的「允许 4K」" : "");
                     await ResetCoreAsync(); return false;
                 }
-                foreach (var selected in candidates.OrderBy(mode => !hdr && !mode.Sdr)
+                HdmiDisplayMode currentMode = null;
+                try { currentMode = _display.GetCurrentDisplayMode(); } catch (Exception) { }
+                foreach (var selected in candidates.OrderBy(mode => !(mode.Mode.ResolutionWidthInRawPixels == outputWidth
+                    && mode.Mode.ResolutionHeightInRawPixels == outputHeight && CanReuse(mode, currentMode, hdr)))
+                    .ThenBy(mode => !hdr && !mode.Sdr)
                     .ThenBy(mode => (long)mode.Mode.ResolutionWidthInRawPixels * mode.Mode.ResolutionHeightInRawPixels)
                     .ThenBy(mode => Math.Abs(mode.Mode.RefreshRate - 60)).Take(8))
                 {
@@ -127,6 +134,7 @@ namespace BiliXbox.Services
                     }
                     if (!changed)
                     {
+                        Diagnostic = "action=request range=" + (hdr ? "HDR10" : "SDR") + " mode=" + selected.Description;
                         // Do not send EotfSdr to a descriptor which does not
                         // advertise that EOTF. The documented mode-only overload
                         // is safe here only for independently verified SDR-only
@@ -147,6 +155,7 @@ namespace BiliXbox.Services
                             }
                         }
                     }
+                    else Diagnostic = "action=keep range=" + (hdr ? "HDR10" : "SDR") + " mode=" + selected.Description;
                     ct.ThrowIfCancellationRequested();
                     if (resetVersion != Volatile.Read(ref _resetVersion)) break;
                     if (!changed) { failures.Add("Xbox 拒绝启用 " + selected.Description + (hdr ? " HDR10" : " SDR")); continue; }
@@ -182,6 +191,14 @@ namespace BiliXbox.Services
                 return false;
             }
             finally { _gate.Release(); }
+        }
+
+        private bool CanReuse(OutputCandidate candidate, HdmiDisplayMode current, bool hdr)
+        {
+            if (current == null || !((_ownsMode && _ownedEotfKnown && _ownedHdr == hdr)
+                || (!hdr && !_ownsMode && candidate.BaselineSdr))) return false;
+            try { return candidate.Mode.IsEqual(current); }
+            catch (Exception) { return false; }
         }
 
         private async Task<bool> RequestAsync(OutputCandidate selected, bool hdr, bool modeOnly,

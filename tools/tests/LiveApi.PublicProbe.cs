@@ -37,6 +37,15 @@ namespace BiliXbox.LiveApiTests
                         }
                     }
                 });
+                var areas = await client.GetLiveAreasAsync();
+                report["categoryCount"] = areas.Count;
+                var parent = areas.FirstOrDefault(item => item.Children.Count > 0);
+                if (parent != null)
+                {
+                    var filtered = await client.GetLiveRoomsAsync(1, parent.Id, parent.Children[0].Id);
+                    report["categoryRooms"] = new JObject { ["parentId"] = parent.Id, ["areaId"] = parent.Children[0].Id,
+                        ["count"] = filtered.Items.Count, ["allMatch"] = filtered.Items.All(room => room.AreaId == parent.Children[0].Id) };
+                }
                 var rooms = await client.GetLiveRoomsAsync(1);
                 report["firstPageCount"] = rooms.Items.Count; report["hasMore"] = rooms.HasMore;
                 if (rooms.Items.Count > 0)

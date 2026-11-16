@@ -24,16 +24,21 @@ namespace BiliXbox.Controls
         private readonly string _editorName;
         private readonly string _placeholder;
         private TextBox _editor;
+        private readonly FrameworkElement _options;
+        private StackPanel _editorLayout;
+        private long _lastOptionsHideTimestamp;
         private bool _isOpen, _nativeInputVisible, _closeRequested, _openingKeyboard;
         private long _lastBackTimestamp, _lastNativeHideTimestamp;
         private int _showGeneration;
 
         public string QueryText => _editor.Text;
 
-        public NativeTextInputDialog(string initialText, string title = "搜索视频", string primaryButtonText = "搜索", int maxLength = 200)
+        public NativeTextInputDialog(string initialText, string title = "搜索视频", string primaryButtonText = "搜索", int maxLength = 200, FrameworkElement options = null)
         {
             if (maxLength < 1) throw new ArgumentOutOfRangeException(nameof(maxLength));
             _maxLength = maxLength;
+            _options = options;
+            AttachOptions(options);
             _editorName = title + "输入内容";
             _placeholder = primaryButtonText == "搜索" ? (title == "搜索用户" ? "输入用户昵称" : "搜索视频或用户、BV 号或视频链接") : "输入内容";
             Title = title;
@@ -84,7 +89,14 @@ namespace BiliXbox.Controls
             AutomationProperties.SetName(_editor, _editorName);
             _editor.Select(Math.Max(0, Math.Min(selection, text.Length)), 0);
             _editor.TextChanged += (sender, args) => IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(QueryText);
-            Content = _editor;
+            if (_options == null) Content = _editor;
+            else
+            {
+                if (_editorLayout == null) _editorLayout = new StackPanel { Spacing = 14 };
+                _editorLayout.Children.Clear();
+                _editorLayout.Children.Add(_options); _editorLayout.Children.Add(_editor);
+                Content = _editorLayout;
+            }
             IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(text);
         }
 
@@ -166,6 +178,7 @@ namespace BiliXbox.Controls
             if (WasRecent(_lastBackTimestamp, now)) return;
             _lastBackTimestamp = now;
             ++_showGeneration;
+            if (CloseOptionsDropdown(_options) || WasRecent(_lastOptionsHideTimestamp, now)) return;
             // Xbox may report the keyboard Hiding before forwarding the same B to the app.
             if (_nativeInputVisible || WasRecent(_lastNativeHideTimestamp, now))
             {
@@ -176,6 +189,18 @@ namespace BiliXbox.Controls
             }
             _closeRequested = true;
             Hide();
+        }
+
+        private static bool CloseOptionsDropdown(object node)
+        {
+            if (node is ComboBox combo && combo.IsDropDownOpen) { combo.IsDropDownOpen = false; return true; }
+            if (node is Panel panel) foreach (var child in panel.Children) if (CloseOptionsDropdown(child)) return true;
+            return false;
+        }
+        private void AttachOptions(object node)
+        {
+            if (node is ComboBox combo) combo.DropDownClosed += (s, e) => _lastOptionsHideTimestamp = Stopwatch.GetTimestamp();
+            if (node is Panel panel) foreach (var child in panel.Children) AttachOptions(child);
         }
 
         // Suspension and navigation may explicitly close the dialog while Xbox's keyboard is
@@ -190,7 +215,8 @@ namespace BiliXbox.Controls
         {
             if (_closeRequested || args.Result != ContentDialogResult.None) return;
             long now = Stopwatch.GetTimestamp();
-            if (_nativeInputVisible || WasRecent(_lastNativeHideTimestamp, now))
+            if (_nativeInputVisible || WasRecent(_lastNativeHideTimestamp, now)
+                || WasRecent(_lastOptionsHideTimestamp, now) || CloseOptionsDropdown(_options))
             {
                 // ContentDialog's own B handler can run before the routed key handler.
                 args.Cancel = true;

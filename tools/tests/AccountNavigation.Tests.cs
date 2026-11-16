@@ -59,6 +59,15 @@ namespace BiliXbox.AccountNavigationTests
             var page = new MainPage();
             var cache = new object(); View(page).CachedView = cache;
             Check(View(page).InitializeCount == 1, "production initialization wires the existing account control once");
+            await Call(page,"ShowAccountLibraryAsync",true);
+            Check(View(page).HistoryCount==1 && View(page).ShowCount==1,
+                "home history shortcut opens authenticated history directly after normal library initialization");
+            await Call(page,"CloseAccountLibraryAsync");
+            page = new MainPage(); View(page).CachedView = cache;
+            await Call(page, "ShowAccountLibraryAsync", false, true);
+            Check(View(page).FavoritesCount == 1, "Favorites shortcut opens actual favorite folders");
+            await Call(page, "ShowAccountLibraryAsync", false, true);
+            Check(View(page).FavoritesCount == 2 && View(page).ShowCount == 1, "Repeated favorites entry reuses the current library surface");
             await Call(page, "ShowAccountLibraryAsync");
             Check(Field<bool>(page, "_libraryVisible") && View(page).ShowCount == 1 && View(page).LastUser.Mid == 42, "home opens authenticated library");
             Check(OriginBookmark(page) == null, "home origin has no invented playback bookmark");

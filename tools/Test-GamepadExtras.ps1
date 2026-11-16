@@ -20,7 +20,7 @@ using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Input;
 '@
-foreach ($taskFile in @('src\BiliXbox\Controls\GamepadAuxiliaryState.cs', 'src\BiliXbox\Controls\FeedNavigationState.cs',
+foreach ($taskFile in @('src\BiliXbox\Controls\ShoulderChordState.cs', 'src\BiliXbox\Controls\GamepadAuxiliaryState.cs', 'src\BiliXbox\Controls\FeedNavigationState.cs',
     'src\BiliXbox\Controls\PlayerUiState.cs', 'src\BiliXbox\MainPage.GamepadExtras.cs', 'tools\tests\GamepadExtras.Tests.cs')) {
     $taskText = [IO.File]::ReadAllText((Join-Path $taskRoot $taskFile))
     $taskSource += [Environment]::NewLine + [regex]::Replace($taskText, '(?m)^using [^;]+;\r?\n', '')
@@ -29,5 +29,9 @@ $taskPageSource = [IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/Main
 $taskMatch = [regex]::Match($taskPageSource, '(?s)        private void Skip\(double seconds\)\s*\{.*?\r?\n        \}')
 if (-not $taskMatch.Success) { throw 'Production Skip method missing.' }
 $taskSource = $taskSource.Replace('/* PRODUCTION_SKIP */', $taskMatch.Value)
+$chords = [IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/MainPage.ViewingShortcuts.cs'))
+$poll = [regex]::Match($chords, '(?s)        private void PollViewingChord\(.*?\r?\n        \}')
+if (-not $poll.Success) { throw 'Production chord polling method missing.' }
+$taskSource = $taskSource.Replace('/* PRODUCTION_CHORD */', $poll.Value)
 Add-Type -TypeDefinition $taskSource -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414'
 [BiliXbox.MainPage]::RunExtrasTests()

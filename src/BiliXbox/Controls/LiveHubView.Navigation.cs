@@ -16,6 +16,7 @@ namespace BiliXbox.Controls
         public bool Back()
         {
             if (_editing) return true; // Native input's owner consumes B.
+            if (_categoryOpen) { CloseLiveCategories(); return true; }
             if (!IsPlayingRoom) return false;
             if (_pane != Pane.None)
             {
@@ -30,6 +31,7 @@ namespace BiliXbox.Controls
         public void RestoreFocus()
         {
             if (_editing) return;
+            if (_categoryOpen) { Focus(IsWithin(_lastFocus, _categoryPanel) ? _lastFocus : _categoryClose); return; }
             if (IsPlayingRoom)
             {
                 WakeChrome();
@@ -43,6 +45,7 @@ namespace BiliXbox.Controls
         internal bool Navigate(PlayerDirection direction)
         {
             if (_editing) return true;
+            if (_categoryOpen) { NavigateLiveCategories(direction); return true; }
             ReconcileScrollFocus();
             var current = FocusManager.GetFocusedElement() as Control;
             if (!OwnsFocus) return false;
@@ -72,7 +75,7 @@ namespace BiliXbox.Controls
                 else next = roomIndex + columns;
                 FocusRoom(next); return true;
             }
-            var header = new List<Control> { _roomInput, _open, _refresh };
+            var header = new List<Control> { _roomInput, _open, _category, _refresh };
             int selected = header.IndexOf(current);
             if (selected >= 0)
             {
@@ -141,7 +144,7 @@ namespace BiliXbox.Controls
         }
         private async void FocusRoom(int index)
         {
-            if (_editing || IsPlayingRoom || index < 0 || index >= _rooms.Items.Count) return;
+            if (_editing || _categoryOpen || IsPlayingRoom || index < 0 || index >= _rooms.Items.Count) return;
             int generation = ++_focusGeneration; var item = _rooms.Items[index]; _selectedIndex = index;
             _rooms.ScrollIntoView(item, index == 0 ? ScrollIntoViewAlignment.Leading : ScrollIntoViewAlignment.Default);
             try
@@ -151,7 +154,7 @@ namespace BiliXbox.Controls
                     bool focused = false;
                     await Dispatcher.RunAsync(CoreDispatcherPriority.Low, () =>
                     {
-                        if (_editing || generation != _focusGeneration || IsPlayingRoom || index >= _rooms.Items.Count || !ReferenceEquals(_rooms.Items[index], item) || Visibility != Visibility.Visible) return;
+                        if (_editing || _categoryOpen || generation != _focusGeneration || IsPlayingRoom || index >= _rooms.Items.Count || !ReferenceEquals(_rooms.Items[index], item) || Visibility != Visibility.Visible) return;
                         _rooms.UpdateLayout(); var row = _rooms.ContainerFromIndex(index) as Control;
                         if (row != null) { focused = row.Focus(FocusState.Keyboard); if (focused) _lastFocus = row; }
                     });

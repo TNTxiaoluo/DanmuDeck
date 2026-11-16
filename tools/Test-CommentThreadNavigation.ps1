@@ -18,7 +18,7 @@ foreach ($taskFile in @('src\BiliXbox\Controls\CommentReadingScroll.cs', 'tools\
     $taskSource += [Environment]::NewLine + [regex]::Replace([IO.File]::ReadAllText((Join-Path $taskRoot $taskFile)), '(?m)^using [^;]+;\r?\n', '')
 }
 $taskProduction = [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\MainPage.CommentsNavigation.cs'))
-foreach ($taskSignature in @('private bool TryOpenCommentComposer()', 'private void RememberCommentComposerPosition(Control control)',
+foreach ($taskSignature in @('private bool TryOpenCommentComposer(bool replyToFocused = false)', 'private void RememberCommentComposerPosition(Control control)',
     'private void RestoreCommentComposerPosition()', 'private bool NavigateCommentDrawerControls(Control current, PlayerDirection direction)',
     'private bool ReadExpandedComment(Control row, PlayerDirection direction)', 'private bool ScrollReplyThread(double delta)',
     'private void CommentList_ItemClick(object sender, ItemClickEventArgs args)', 'private bool TryActivateCommentControl(Control control)',

@@ -1,13 +1,19 @@
 // Execute the production page transport orchestration with media/native I/O
 // substituted. No requests, account writes, or display changes are performed.
 namespace Windows.UI.Xaml { }
-namespace Windows.Media.Playback { internal enum MediaPlaybackState { Playing, Paused, Buffering } }
+namespace Windows.Media.Playback {
+    internal enum MediaPlaybackState { Playing, Paused, Buffering }
+    internal enum MediaPlayerError { Unknown, Aborted, NetworkError, DecodingError, SourceNotSupported }
+}
 namespace BiliXbox.Services
 {
     internal sealed class AdaptivePlaybackSource
     {
         public bool HasAlternateRoutes;
         public int NextRouteOffset = 7;
+        public int FailureRouteOffset = 6;
+        public bool DownloadFailurePending;
+        public string TransportDiagnostic => "requested=3 failed=1 totalBytes=0";
         public double CurrentDownloadBytesPerSecond = 5 * 1024 * 1024;
     }
     internal static class PlaybackRouteSelector
@@ -98,6 +104,9 @@ namespace BiliXbox
         internal void CancelPart() { _partCts.Cancel(); }
         internal void NewQuality() { ResetPlaybackRecovery(false); }
         internal void Alternates() { _adaptivePlayback.HasAlternateRoutes = true; }
+        internal void Receiving(bool value) { _adaptivePlayback.CurrentDownloadBytesPerSecond = value ? 5 * 1024 * 1024 : 0; }
+        internal Task<bool> Fail(Windows.Media.Playback.MediaPlayerError error, bool downloadFailed = false)
+        { _adaptivePlayback.DownloadFailurePending = downloadFailed; return TryRecoverFailedDownloadAsync(error,_media.Source); }
         internal void Offset(int offset) { _playbackRouteOffset = offset; }
         internal string Speed => BufferingSpeed.Text;
         internal PlaybackInfo Playback => _playback;
@@ -136,6 +145,27 @@ namespace BiliXbox.PlaybackTransportTests
         { ++_checks; if (!value) throw new Exception("FAIL: " + message); }
         public static string Run()
         {
+            var downloading = new MainPage(); downloading.Alternates();
+            for (int i=0;i<=40;++i) downloading.Sample(i,buffer:0);
+            Check(downloading.Loads==0, "active downloads with zero playable cache do not repeatedly discard the source");
+            downloading.Receiving(false); downloading.Sample(41,buffer:0); downloading.Sample(49,buffer:0);
+            Check(downloading.Loads==1, "eight seconds without byte progress still trigger bounded route recovery");
+            var network = new MainPage(); network.Alternates(); var original = network.Playback;
+            Check(network.Fail(Windows.Media.Playback.MediaPlayerError.NetworkError).GetAwaiter().GetResult()
+                && network.Loads==1 && ReferenceEquals(network.Loaded,original) && network.OffsetAtLoad==6
+                && network.PreserveAtLoad && network.RecoveryAtLoad,
+                "terminal network error preserves actual4K, position and replacement route rather than dropping quality");
+            Check(network.Fail(Windows.Media.Playback.MediaPlayerError.NetworkError).GetAwaiter().GetResult()
+                && !network.Fail(Windows.Media.Playback.MediaPlayerError.NetworkError).GetAwaiter().GetResult()
+                && network.Loads==2, "repeated native network errors cannot replenish retry budget");
+            var decode = new MainPage(); decode.Alternates();
+            Check(!decode.Fail(Windows.Media.Playback.MediaPlayerError.DecodingError,true).GetAwaiter().GetResult()
+                && decode.Loads==0, "known decoder errors remain eligible for existing codec/audio fallback");
+            Check(decode.Fail(Windows.Media.Playback.MediaPlayerError.Unknown,true).GetAwaiter().GetResult(),
+                "unknown error plus unresolved native download failure can try another real route");
+            var paused = new MainPage(); paused.Alternates(); paused.Pause();
+            Check(!paused.Fail(Windows.Media.Playback.MediaPlayerError.NetworkError).GetAwaiter().GetResult()
+                && paused.Loads==0, "terminal error never resumes an explicitly paused video");
             var page = new MainPage(); page.Offset(2);
             page.Sample(0); page.Sample(11.999);
             Check(page.Loads == 0, "a short buffered wait must not rebuild");
@@ -170,7 +200,7 @@ namespace BiliXbox.PlaybackTransportTests
             Check(page.Loads == 1, "pending rebuild serializes later watchdog samples");
             page.HoldLoad.SetResult(true);
 
-            page = new MainPage(); page.Alternates(); page.Sample(0, buffer: 0); page.Sample(8, buffer: 0);
+            page = new MainPage(); page.Alternates(); page.Receiving(false); page.Sample(0, buffer: 0); page.Sample(8, buffer: 0);
             Check(page.Loads == 1 && page.OffsetAtLoad == 7, "actual starvation still uses alternate-route recovery");
             Check(page.RestartAttempts == 0 && page.Status.Contains("重新缓冲"), "starvation does not consume buffered-stall restart");
             Check(page.Diagnostics.Any(value => value.StartsWith("route-recovery") && value.Contains("playableSeconds=0")
@@ -229,8 +259,9 @@ namespace BiliXbox.PlaybackTransportTests
             Check(page.Loads == 0 && page.RestartAttempts == 0 && page.Pauses == 1
                 && page.PlayRequests == 0 && page.BufferWait,
                 "deliberately paused2.5second buffer is retained beyond the12second decoder watchdog");
-            Check(page.Diagnostics.Count == 1 && page.Diagnostics[0].StartsWith("buffer-pause")
-                && page.Diagnostics[0].Contains("playableSeconds=2.5"),
+            var refillActions = page.Diagnostics.Where(value => !value.StartsWith("transport-wait")).ToList();
+            Check(refillActions.Count == 1 && refillActions[0].StartsWith("buffer-pause")
+                && refillActions[0].Contains("playableSeconds=2.5"),
                 "a long intentional refill emits one pause diagnostic and no repeated actions or recovery");
             page.WaitingSample(31, 3); page.WaitingSample(32, 3);
             Check(page.Loads == 0 && page.Plays == 1 && !page.BufferWait,

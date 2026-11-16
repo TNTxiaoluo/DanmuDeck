@@ -47,7 +47,7 @@ namespace BiliXbox.LiveFocusTests
     public sealed class LiveHubView
     {
         private int _focusGeneration, _roomGeneration = 1, _selectedIndex;
-        private bool _editing, _sending, IsPlayingRoom;
+        private bool _editing, _categoryOpen, _sending, IsPlayingRoom;
         private readonly GridView _rooms = new GridView();
         private readonly Dispatcher Dispatcher = new Dispatcher();
         private readonly TextBlock _notice = new TextBlock(), _drawerNotice = new TextBlock();
@@ -76,6 +76,10 @@ namespace BiliXbox.LiveFocusTests
             check(view.Dispatcher.Pending == 0 && view._rooms.ScrollCalls == 0, "Starting list restore during native editing does not queue or scroll");
             view = ready(); view.FocusRoom(0); view._editing = true; view.Dispatcher.Drain();
             check(view._rooms.Row.FocusCount == 0, "Already queued room callback cannot steal active editor focus");
+            view = ready(); view._categoryOpen = true; view.FocusRoom(0);
+            check(view.Dispatcher.Pending == 0 && view._rooms.ScrollCalls == 0, "Category panel blocks new room focus requests");
+            view = ready(); view.FocusRoom(0); view._categoryOpen = true; view.Dispatcher.Drain();
+            check(view._rooms.Row.FocusCount == 0, "Queued room focus cannot steal category selection focus");
             view = ready(); view.FocusRoom(0);
             var keyboard = new TaskCompletionSource<bool>(); TextBox edited = null;
             view.RequestTextInputAsync = (editor, title, limit) => { edited = editor; editor.IsReadOnly = false; editor.IsFocusEngaged = true; editor.Focus(FocusState.Keyboard); return keyboard.Task; };

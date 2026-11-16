@@ -10,6 +10,7 @@ namespace BiliXbox.Services
         internal static Func<Task> Reset;
         internal static string Failure;
         internal string FailureReason => Failure;
+        internal string Diagnostic => "test-only-display";
         internal PlaybackDisplayController() { ++Constructed; }
         internal Task<bool> PrepareAsync(PlaybackInfo value, CancellationToken token)
         { ++PrepareCount; return Prepare == null ? Task.FromResult(true) : Prepare(value, token); }
@@ -22,6 +23,8 @@ namespace BiliXbox
     public sealed partial class MainPage
     {
         private bool _disposed, _libraryVisible, _creatorVisible, _watching = true, _wantsPlayback = true, _resumeAfterOpen = true;
+        private bool _inBackground, _backgroundAudio;
+        private void SuspendGamepadInput() { }
         private int _partGeneration = 1;
         private long _currentCid = 7;
         private CancellationTokenSource _watchCts = new CancellationTokenSource(), _partCts = new CancellationTokenSource();
@@ -177,6 +180,9 @@ namespace BiliXbox.DisplayIntegrationTests
             var pending = new TaskCompletionSource<bool>();
             PlaybackDisplayController.Prepare = (value, token) => pending.Task;
             var play = page.PlayForTest();
+            var duplicatePlay = page.PlayForTest();
+            Check(ReferenceEquals(play, duplicatePlay) && PlaybackDisplayController.PrepareCount == 1,
+                "duplicate same-source play joins in-flight HDMI preparation without cancellation or reset");
             Check(page.Plays == 0 && !play.IsCompleted, "play waits for asynchronous native mode acceptance");
             pending.SetResult(true); await play;
             Check(page.Plays == 1, "accepted current mode permits one playback start");

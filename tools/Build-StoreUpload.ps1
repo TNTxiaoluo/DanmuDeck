@@ -7,7 +7,7 @@ param(
     [string]$PublisherDisplayName,
     [string]$StoreAssociationPath,
     [switch]$DevelopmentIdentityDraft,
-    [string]$Version = '1.0.2.0',
+    [string]$Version,
     [string]$DisplayName = '弹幕舱',
     [string]$MSBuildPath,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\StoreUpload'),
@@ -48,6 +48,10 @@ function Read-SafeXml {
     return $document
 }
 
+if ([string]::IsNullOrEmpty($Version)) {
+    $releaseManifest = Read-SafeXml (Join-Path $workspace 'src\BiliXbox\Package.appxmanifest')
+    $Version = [string]$releaseManifest.Package.Identity.Version
+}
 $quad = $null
 if (-not [Version]::TryParse($Version, [ref]$quad) -or $Version -notmatch '^\d+\.\d+\.\d+\.0$' -or
     $quad.Major -lt 1 -or $quad.Major -gt 65535 -or $quad.Minor -gt 65535 -or $quad.Build -gt 65535) {

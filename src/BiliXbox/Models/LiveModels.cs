@@ -4,6 +4,14 @@ using System.Globalization;
 
 namespace BiliXbox.Models
 {
+    public sealed class LiveArea
+    {
+        public long Id { get; set; }
+        public long ParentId { get; set; }
+        public string Name { get; set; } = "";
+        public IReadOnlyList<LiveArea> Children { get; set; } = Array.Empty<LiveArea>();
+    }
+
     public sealed class LiveRoom
     {
         public long Id { get; set; }

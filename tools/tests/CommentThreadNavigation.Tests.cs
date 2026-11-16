@@ -28,6 +28,7 @@ namespace Windows.UI.Xaml.Controls
 {
     public class Control : DependencyObject
     {
+        public object Tag;
         public bool IsEnabled = true, IsLoaded = true;
         public Visibility Visibility;
         public FontFamily FontFamily = new FontFamily();
@@ -37,7 +38,7 @@ namespace Windows.UI.Xaml.Controls
             => new GeneralTransform(rect => new Rect(0, ContentTop - (GeometryViewer?.VerticalOffset ?? 0), ActualWidth, ActualHeight));
     }
     public class FontFamily { public string Source = ""; }
-    public class Button : Control { public object Tag; }
+    public class Button : Control { }
     public class ComboBox : Control { public bool IsDropDownOpen; public bool Focus(FocusState state) => true; }
     public class Grid : Control { public readonly List<Control> Children = new List<Control>(); }
     public class ItemClickEventArgs : EventArgs { public object ClickedItem; }
@@ -133,7 +134,8 @@ namespace BiliXbox
         private readonly Button QualityAccountButton = new Button(), CommentLoginButton = new Button(), RefreshCommentsButton = new Button(), MoreCommentsButton = new Button(), WriteReplyCommentButton = new Button();
         private readonly Control DanmakuSettingsSide = new Control();
         private readonly ComboBox PartSelector = new ComboBox();
-        private readonly Grid QualityOptions = new Grid();
+        private readonly Grid QualityOptions = new Grid(), AudioOptions = new Grid();
+        private readonly List<Control> _experienceOptions = new List<Control>();
         private VideoDetail _video = new VideoDetail { Aid = 900 };
         private long CurrentAccountMid = 10;
         private CommentItem _replyRoot = new CommentItem { Id = 100, Author = "Root" };
@@ -172,6 +174,7 @@ namespace BiliXbox
         private void SendComment_Click(object sender, RoutedEventArgs args) { }
         private void MoreReplies_Click(object sender, RoutedEventArgs args) { }
         private void Quality_Click(object sender, RoutedEventArgs args) { }
+        private void Audio_Click(object sender, RoutedEventArgs args) { }
         private void FocusGamepadControl(Control control, bool bringIntoView = true)
         { if (control?.IsEnabled == true) { FocusManager.Focused = control; _lastBringIntoView = bringIntoView; } }
         private void FocusGamepadListItem(ListView list, int index, bool preserveViewport = false)
@@ -205,6 +208,16 @@ namespace BiliXbox
         public static string RunThreadNavigationTests()
         {
             _checks = 0;
+            var rootPage = Fresh(); rootPage._viewingReplies = false;
+            var rootItem = new CommentItem { Id = 900, Author = "Root row" };
+            var rootRow = new ListViewItem { Content = rootItem, Parent = rootPage.CommentList };
+            rootPage.CommentList.Items.Add(rootItem); rootPage.CommentList.Rows.Add(rootRow); rootPage.FocusGamepadControl(rootRow);
+            Check(rootPage.TryOpenCommentComposer() && rootPage._openedEditors == 1 && rootPage._openedThreads == 0
+                && rootPage._replyComposerTarget == null && !rootPage._viewingReplies,
+                "Default X on a root comment writes to the video, never silently targets that user.");
+            Check(rootPage.TryOpenCommentComposer(true) && rootPage._openedThreads == 1
+                && ReferenceEquals(rootPage._replyComposerTarget, rootItem) && rootPage._openedEditors == 2,
+                "LB+X deliberately targets the focused root comment and enters its correct thread.");
             foreach (bool withPicture in new[] { false, true })
             foreach (int replyCount in new[] { 0, 8 })
             {

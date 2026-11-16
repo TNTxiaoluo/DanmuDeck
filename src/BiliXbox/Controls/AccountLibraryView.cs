@@ -20,7 +20,7 @@ namespace BiliXbox.Controls
     // as the feed. MainPage continues to own input dispatch, login and playback.
     public sealed partial class AccountLibraryView : UserControl
     {
-        private enum LibraryPane { Overview, History, Folders, Favorites, Follows, Episodes }
+        private enum LibraryPane { Overview, History, Folders, Favorites, Follows, Episodes, WatchLater, Activity }
         private sealed class ViewState
         {
             public LibraryPane Pane;
@@ -61,7 +61,7 @@ namespace BiliXbox.Controls
             XYFocusKeyboardNavigation = XYFocusKeyboardNavigationMode.Enabled;
             HorizontalContentAlignment = HorizontalAlignment.Stretch;
             VerticalContentAlignment = VerticalAlignment.Stretch;
-            _root = new Grid { Background = Brush(255, 13, 13, 16), Padding = new Thickness(52, 28, 52, 20), RowSpacing = 14 };
+            _root = new Grid { Background = Brush(255, 13, 13, 16), Padding = new Thickness(52, 20, 52, 16), RowSpacing = 8 };
             _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -83,11 +83,12 @@ namespace BiliXbox.Controls
             Add(header, _signOut, 0, 3); _root.Children.Add(header);
 
             _overview = new Grid { ColumnSpacing = 24, Padding = new Thickness(20, 38, 20, 24), VerticalAlignment = VerticalAlignment.Center };
-            for (int i = 0; i < 3; ++i) _overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            for (int i = 0; i < 5; ++i) _overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             _history = SectionButton("\uE81C", "播放历史", "从上次看到的地方继续", () => OpenSection(LibraryPane.History), "AccountHistoryButton");
             _favorites = SectionButton("\uE8B7", "收藏", "浏览收藏夹与收藏的视频", () => OpenSection(LibraryPane.Folders), "AccountFavoritesButton");
             _follows = SectionButton("\uE8F2", "追番追剧", "番剧、电视剧、电影与纪录片", () => OpenSection(LibraryPane.Follows), "AccountFollowsButton");
             Add(_overview, _history, 0, 0); Add(_overview, _favorites, 0, 1); Add(_overview, _follows, 0, 2);
+            InitializeActivityOverview();
             Add(_root, _overview, 1, 0);
 
             _browse = new Grid { RowSpacing = 10 };
@@ -110,11 +111,11 @@ namespace BiliXbox.Controls
             _notice = Text("", 14); _notice.Foreground = SecondaryBrush(); _notice.TextWrapping = TextWrapping.Wrap;
             _notice.MaxLines = 2; _notice.TextTrimming = TextTrimming.CharacterEllipsis; Add(_browse, _notice, 1, 0);
             var content = new Grid();
-            _videoGrid = MakeGrid("AccountVideoGrid", "账户内容", 282);
-            _videoGrid.ItemTemplate = (DataTemplate)Application.Current.Resources["TvVideoCardTemplate"];
+            _videoGrid = MakeGrid("AccountVideoGrid", "账户内容", 224);
+            _videoGrid.ItemTemplate = (DataTemplate)Application.Current.Resources["TvCompactVideoCardTemplate"];
             _videoGrid.ItemClick += (sender, args) => Run(() => OpenItemAsync(args.ClickedItem as AccountLibraryItem));
-            _folderGrid = MakeGrid("AccountFolderGrid", "收藏夹", 370);
-            _folderGrid.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><Grid Width='332' Margin='18,14,18,24'><Grid Tag='TvShadow' IsHitTestVisible='False'/><Border Background='#1C1C1E' CornerRadius='16' Padding='24'><StackPanel Spacing='18'><FontIcon Glyph='&#xE8B7;' FontFamily='Segoe MDL2 Assets' FontSize='36' HorizontalAlignment='Left' Foreground='#F2F2F7'/><TextBlock Text='{Binding Title}' FontSize='21' FontWeight='SemiBold' Foreground='#F2F2F7' TextWrapping='Wrap' MaxLines='2' Height='56' TextTrimming='CharacterEllipsis'/><StackPanel Orientation='Horizontal'><TextBlock Text='{Binding Count}' Foreground='#8E8E93' FontSize='14'/><TextBlock Text=' 个内容' Foreground='#8E8E93' FontSize='14'/></StackPanel></StackPanel></Border></Grid></DataTemplate>");
+            _folderGrid = MakeGrid("AccountFolderGrid", "收藏夹", 282);
+            _folderGrid.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><Grid Width='246' Margin='18,10,18,14'><Grid Tag='TvShadow' IsHitTestVisible='False'/><Border Background='#1C1C1E' CornerRadius='14' Padding='18'><StackPanel Spacing='12'><FontIcon Glyph='&#xE8B7;' FontFamily='Segoe MDL2 Assets' FontSize='28' HorizontalAlignment='Left' Foreground='#F2F2F7'/><TextBlock Text='{Binding Title}' FontSize='18' FontWeight='SemiBold' Foreground='#F2F2F7' TextWrapping='Wrap' MaxLines='2' Height='48' TextTrimming='CharacterEllipsis'/><StackPanel Orientation='Horizontal'><TextBlock Text='{Binding Count}' Foreground='#8E8E93' FontSize='14'/><TextBlock Text=' 个内容' Foreground='#8E8E93' FontSize='14'/></StackPanel></StackPanel></Border></Grid></DataTemplate>");
             _folderGrid.ItemClick += (sender, args) => { var folder = args.ClickedItem as FavoriteFolder; if (folder != null) OpenFolder(folder); };
             content.Children.Add(_videoGrid); content.Children.Add(_folderGrid);
             _empty = Text("", 20); _empty.TextWrapping = TextWrapping.Wrap; _empty.TextAlignment = TextAlignment.Center;
@@ -160,12 +161,16 @@ namespace BiliXbox.Controls
 
         public void StopRequests()
         {
+            _unreadBusy = false;
+            _authorsBusy = false; Cancel(ref _activityCts);
+            _activityHub?.StopRequests();
             Cancel(ref _loadCts); Cancel(ref _sessionCts);
             _busy = _openingItem = false; ++_openGeneration; ++_focusGeneration; _pendingList = null; _pendingIndex = -1;
         }
 
         public void ClearAccount()
         {
+            ResetActivityAccount();
             StopRequests(); _accountMid = 0; _trail.Clear(); _state = new ViewState();
             _lastFocus = null; _name.Text = "我的账户"; _avatar.Url = ""; _subtitle.Text = "登录后查看你的内容";
             _videoGrid.ItemsSource = _folderGrid.ItemsSource = null; Render();
@@ -197,8 +202,9 @@ namespace BiliXbox.Controls
         {
             bool overview = _state.Pane == LibraryPane.Overview;
             _overview.Visibility = overview ? Visibility.Visible : Visibility.Collapsed;
-            _browse.Visibility = overview ? Visibility.Collapsed : Visibility.Visible;
-            _history.IsEnabled = _favorites.IsEnabled = _follows.IsEnabled = _signOut.IsEnabled = HasAccount;
+            _browse.Visibility = overview || _state.Pane == LibraryPane.Activity ? Visibility.Collapsed : Visibility.Visible;
+            _activityHost.Visibility = _state.Pane == LibraryPane.Activity ? Visibility.Visible : Visibility.Collapsed;
+            _history.IsEnabled = _favorites.IsEnabled = _follows.IsEnabled = _watchLater.IsEnabled = _activity.IsEnabled = _signOut.IsEnabled = HasAccount;
             _sectionTitle.Text = _state.Title;
             _tabs.Visibility = _state.Pane == LibraryPane.Follows ? Visibility.Visible : Visibility.Collapsed;
             SetTab(_anime, !_state.Drama); SetTab(_drama, _state.Drama);
@@ -215,7 +221,7 @@ namespace BiliXbox.Controls
             _progress.IsActive = _busy; _progress.Visibility = _busy ? Visibility.Visible : Visibility.Collapsed;
             _empty.Text = HasAccount ? "这里还没有内容。" : "登录已失效，请返回后重新登录。";
             _empty.Visibility = !overview && !_busy && ActiveList.Items.Count == 0 && string.IsNullOrWhiteSpace(_state.Notice) ? Visibility.Visible : Visibility.Collapsed;
-            bool paged = _state.Pane == LibraryPane.History || _state.Pane == LibraryPane.Favorites || _state.Pane == LibraryPane.Follows;
+            bool paged = _state.Pane == LibraryPane.WatchLater || _state.Pane == LibraryPane.History || _state.Pane == LibraryPane.Favorites || _state.Pane == LibraryPane.Follows;
             _pager.Visibility = paged ? Visibility.Visible : Visibility.Collapsed;
             _previous.IsEnabled = !_busy && _state.PageIndex > 0;
             _next.IsEnabled = !_busy && (CurrentPage?.HasMore == true || _state.PageIndex + 1 < _state.Pages.Count);
@@ -227,7 +233,7 @@ namespace BiliXbox.Controls
             var grid = new GridView
             {
                 SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true, RequiresPointer = RequiresPointer.Never,
-                Padding = new Thickness(20, 18, 20, 24), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Padding = new Thickness(12, 12, 12, 16), HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 ItemContainerStyle = (Style)Application.Current.Resources["TvCardItemStyle"]
             };
             grid.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ItemsWrapGrid Orientation='Horizontal' ItemWidth='" + width + "' /></ItemsPanelTemplate>");

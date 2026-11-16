@@ -19,6 +19,7 @@ namespace BiliXbox.Services
         private readonly TrackRoutes _audio;
         private readonly Dictionary<string, PendingRequest> _pending = new Dictionary<string, PendingRequest>(StringComparer.Ordinal);
         private int _changes;
+        private int? _failureRouteOffset;
 
         internal DashRoutePolicy(string manifest, IReadOnlyList<string> videoUrls, IReadOnlyList<string> audioUrls, int routeOffset)
         {
@@ -42,6 +43,20 @@ namespace BiliXbox.Services
                 {
                     var track = _video != null && _video.Urls.Length > 1 ? _video : _audio;
                     return track == null ? 0 : track.Selected + 1;
+                }
+            }
+        }
+
+        internal int FailureRouteOffset
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    var track = _video != null && _video.Urls.Length > 1 ? _video : _audio;
+                    // DownloadFailed already rotates the failing track. Do not
+                    // skip that replacement when recreating a terminal source.
+                    return _failureRouteOffset ?? (track == null ? 0 : track.Selected + 1);
                 }
             }
         }
@@ -101,6 +116,7 @@ namespace BiliXbox.Services
                     int next = (track.Selected + step) % track.Urls.Length;
                     if (track.Unavailable.Contains(next)) continue;
                     track.Selected = next;
+                    _failureRouteOffset = next;
                     _changes++;
                     return true;
                 }

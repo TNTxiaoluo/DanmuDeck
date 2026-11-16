@@ -15,6 +15,7 @@ namespace BiliXbox.Controls
     {
         public bool ScrollBy(double delta)
         {
+            if (_state.Pane == LibraryPane.Activity) return _activityEntered && _activityHub.ScrollBy(delta);
             if (_busy || _state.Pane == LibraryPane.Overview || Visibility != Visibility.Visible) return false;
             ++_focusGeneration; _pendingList = null; _pendingIndex = -1;
             var list = ActiveList; var state = _state;
@@ -35,10 +36,11 @@ namespace BiliXbox.Controls
                 return;
             }
             Render();
+            if (_state.Pane == LibraryPane.Activity) { RestoreActivityFocus(); return; }
             if (_state.Pane == LibraryPane.Overview)
             {
-                var sections = new Control[] { _history, _favorites, _follows };
-                Focus(IsAvailable(_lastFocus) ? _lastFocus : sections[Math.Max(0, Math.Min(2, _state.SelectedIndex))]); return;
+                var sections = new Control[] { _history, _favorites, _follows, _watchLater, _activity };
+                Focus(IsAvailable(_lastFocus) ? _lastFocus : sections[Math.Max(0, Math.Min(4, _state.SelectedIndex))]); return;
             }
             if (ActiveList.Items.Count > 0) FocusItem(ActiveList, Math.Min(_state.SelectedIndex, ActiveList.Items.Count - 1));
             else FocusFirst();
@@ -46,6 +48,7 @@ namespace BiliXbox.Controls
 
         internal void Navigate(PlayerDirection direction)
         {
+            if (_state.Pane == LibraryPane.Activity) { NavigateActivity(direction); return; }
             ViewportFocusScroll.Reconcile(ActiveList); ViewportFocusScroll.Cancel(this);
             var current = FocusManager.GetFocusedElement() as Control;
             var list = ActiveList; int index = ListIndex(list, current);
@@ -64,13 +67,13 @@ namespace BiliXbox.Controls
                 else target = index + columns;
                 FocusItem(list, target); return;
             }
-            var sections = new Control[] { _history, _favorites, _follows };
+            var sections = new Control[] { _history, _favorites, _follows, _watchLater, _activity };
             int sectionIndex = Array.IndexOf(sections, current);
             if (sectionIndex >= 0 && _state.Pane == LibraryPane.Overview)
             {
                 if (direction == PlayerDirection.Up) Focus(_back);
                 else if (direction == PlayerDirection.Left || direction == PlayerDirection.Right)
-                    Focus(sections[Math.Max(0, Math.Min(2, sectionIndex + (direction == PlayerDirection.Left ? -1 : 1)))]);
+                    Focus(sections[Math.Max(0, Math.Min(4, sectionIndex + (direction == PlayerDirection.Left ? -1 : 1)))]);
                 return;
             }
             if (ReferenceEquals(current, _back) || ReferenceEquals(current, _signOut))
@@ -115,6 +118,7 @@ namespace BiliXbox.Controls
         internal void Confirm(bool repeat)
         {
             if (repeat || _openingItem) return;
+            if (_state.Pane == LibraryPane.Activity) { ConfirmActivity(); return; }
             var current = FocusManager.GetFocusedElement() as Control;
             int index = ListIndex(ActiveList, current);
             if (_state.Pane != LibraryPane.Overview && index >= 0 && index < ActiveList.Items.Count)
@@ -128,6 +132,8 @@ namespace BiliXbox.Controls
             else if (ReferenceEquals(current, _history) && _history.IsEnabled) OpenSection(LibraryPane.History);
             else if (ReferenceEquals(current, _favorites) && _favorites.IsEnabled) OpenSection(LibraryPane.Folders);
             else if (ReferenceEquals(current, _follows) && _follows.IsEnabled) OpenSection(LibraryPane.Follows);
+            else if (ReferenceEquals(current, _watchLater) && _watchLater.IsEnabled) OpenSection(LibraryPane.WatchLater);
+            else if (ReferenceEquals(current, _activity) && _activity.IsEnabled) OpenSection(LibraryPane.Activity);
             else if (ReferenceEquals(current, _anime) && _anime.IsEnabled) SwitchFollows(false);
             else if (ReferenceEquals(current, _drama) && _drama.IsEnabled) SwitchFollows(true);
             else if (ReferenceEquals(current, _refresh) && _refresh.IsEnabled) Run(RefreshAsync);

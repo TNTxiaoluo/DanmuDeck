@@ -68,6 +68,7 @@ namespace BiliXbox.Controls
         private readonly ListView _dynamicList, _commentList, _replyList;
         private readonly StackPanel _pager;
         private readonly ScrollViewer _detailScroll;
+        private readonly StackPanel _browseTabs;
         private readonly StackPanel _detailContent;
         private readonly TextBlock _commentTitle, _commentHint, _draftLabel;
         private TextBox _draftEditor;
@@ -82,6 +83,11 @@ namespace BiliXbox.Controls
         public event EventHandler LoginRequested;
         public event EventHandler ImageViewerOpened;
         public event EventHandler ImageViewerClosed;
+        public event EventHandler DiscussionLayoutChanged;
+        public event Action<IReadOnlyList<CreatorDynamicItem>> DynamicsLoaded;
+        public event Action<CreatorDynamicItem> DynamicViewed;
+        public bool IsDiscussionOpen => IsDetail;
+        public IReadOnlyList<CreatorDynamicItem> LoadedDynamics => _dynamics;
         public bool IsImageOpen => _commentImages?.IsOpen == true;
         public bool RequestImageBack() => _commentImages?.RequestBack() == true;
         // The editor is already visible in this view. Native keyboard dismissal
@@ -96,7 +102,7 @@ namespace BiliXbox.Controls
             XYFocusKeyboardNavigation = XYFocusKeyboardNavigationMode.Enabled;
             HorizontalContentAlignment = HorizontalAlignment.Stretch;
             VerticalContentAlignment = VerticalAlignment.Stretch;
-            _root = new Grid { Background = Brush(255, 13, 13, 16), Padding = new Thickness(52, 28, 52, 20), RowSpacing = 14 };
+            _root = new Grid { Background = Brush(255, 13, 13, 16), Padding = new Thickness(52, 20, 52, 16), RowSpacing = 8 };
             _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -119,10 +125,12 @@ namespace BiliXbox.Controls
             Add(header, identity, 0, 2); _root.Children.Add(header);
 
             var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            _browseTabs = tabs;
             _videosTab = Button("视频", () => SwitchTab(HubPane.Videos));
             _dynamicsTab = Button("动态", () => SwitchTab(HubPane.Dynamics));
             _refresh = Button("刷新", () => Run(RefreshAsync));
-            tabs.Children.Add(_videosTab); tabs.Children.Add(_dynamicsTab); tabs.Children.Add(_refresh);
+            _continuous = Button("连续播放：关", ToggleContinuousPlayback);
+            tabs.Children.Add(_continuous); tabs.Children.Add(_videosTab); tabs.Children.Add(_dynamicsTab); tabs.Children.Add(_refresh);
             Add(_root, tabs, 1, 0);
 
             _browse = new Grid { RowSpacing = 8 };
@@ -135,11 +143,11 @@ namespace BiliXbox.Controls
             _videoList = new GridView
             {
                 SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true,
-                Padding = new Thickness(20, 18, 20, 24), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Padding = new Thickness(12, 12, 12, 16), HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 ItemContainerStyle = (Style)Application.Current.Resources["TvCardItemStyle"],
-                ItemTemplate = (DataTemplate)Application.Current.Resources["TvVideoCardTemplate"]
+                ItemTemplate = (DataTemplate)Application.Current.Resources["TvCompactVideoCardTemplate"]
             };
-            _videoList.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ItemsWrapGrid Orientation='Horizontal' ItemWidth='282' /></ItemsPanelTemplate>");
+            _videoList.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("<ItemsPanelTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><ItemsWrapGrid Orientation='Horizontal' ItemWidth='224' /></ItemsPanelTemplate>");
             ScrollViewer.SetHorizontalScrollMode(_videoList, ScrollMode.Disabled);
             ScrollViewer.SetVerticalScrollMode(_videoList, ScrollMode.Enabled);
             ScrollViewer.SetVerticalScrollBarVisibility(_videoList, ScrollBarVisibility.Hidden);
@@ -171,7 +179,7 @@ namespace BiliXbox.Controls
 
             _detail = new Grid { ColumnSpacing = 20, Visibility = Visibility.Collapsed };
             _detail.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            _detail.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(426) });
+            _detail.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
             var post = new Grid { RowSpacing = 12 };
             post.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             post.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -242,13 +250,18 @@ namespace BiliXbox.Controls
             ApplyPane();
         }
 
-        public async Task OpenAsync(BilibiliClient api, long mid, string name, string avatar)
+        public async Task OpenAsync(BilibiliClient api, long mid, string name, string avatar, bool activityOnly = false)
         {
             if (api == null) throw new ArgumentNullException(nameof(api));
             if (mid <= 0) throw new ArgumentOutOfRangeException(nameof(mid));
             StopRequests();
+            if (_mid != mid) ContinuousPlayback = false;
             _api = api; _mid = mid; _sessionCts = new CancellationTokenSource();
-            _pane = HubPane.Videos; _videosLoaded = _dynamicsLoaded = false;
+            _root.Padding = activityOnly ? new Thickness(8) : new Thickness(52, 20, 52, 16);
+            _continuous.Content = "连续播放：" + (ContinuousPlayback ? "开" : "关");
+            _continuous.Visibility = _videosTab.Visibility = activityOnly ? Visibility.Collapsed : Visibility.Visible;
+            _allFollowingActivity = activityOnly && mid == api.CurrentUser?.Mid && name == "所有动态";
+            _pane = activityOnly ? HubPane.Dynamics : HubPane.Videos; _videosLoaded = _dynamicsLoaded = false;
             _videos.Clear(); _dynamics.Clear(); _videoList.Items.Clear(); _dynamicList.Items.Clear();
             _comments.Clear(); _replies.Clear(); _commentList.Items.Clear(); _replyList.Items.Clear();
             _dynamic = null; _target = null; _replyRoot = null;
@@ -258,9 +271,10 @@ namespace BiliXbox.Controls
             _avatar.Url = avatar ?? ""; _name.Text = string.IsNullOrWhiteSpace(name) ? "UP 主 · " + mid : name;
             _signature.Text = "正在读取 UP 主资料…"; _stats.Text = "";
             _videoNotice = "正在读取投稿…"; _dynamicNotice = "选择动态标签后读取公开动态。";
-            ApplyPane(); Focus(_videosTab);
+            ApplyPane(); Focus(activityOnly ? _dynamicsTab : _videosTab);
             var owner = _sessionCts;
-            await Task.WhenAll(LoadProfileAsync(owner), LoadVideosAsync(1));
+            if (activityOnly) { _signature.Text = _allFollowingActivity ? "你关注的 UP 主的最新动态" : "UP 主公开动态"; await LoadDynamicsAsync(true); }
+            else await Task.WhenAll(LoadProfileAsync(owner), LoadVideosAsync(1));
         }
 
         // Pause or leave the hub without discarding its lists or draft. Restoring
@@ -281,7 +295,7 @@ namespace BiliXbox.Controls
             EnsureSession(); SelectDraft(); ApplyPane();
             if (IsAvailable(_lastFocus)) Focus(_lastFocus);
             else if (ActiveList.Items.Count > 0) FocusItem(ActiveList, 0);
-            else Focus(IsDetail ? (Control)_write : _videosTab);
+            else Focus(IsDetail ? (Control)_write : _pane == HubPane.Dynamics ? _dynamicsTab : _videosTab);
         }
 
         public bool Back()
@@ -427,7 +441,8 @@ namespace BiliXbox.Controls
             _dynamicsBusy = true; UpdateActions(); SetBrowseNotice(HubPane.Dynamics, "正在读取动态…");
             try
             {
-                var result = await _api.GetCreatorDynamicsAsync(_mid, offset, owner.Token);
+                var result = _allFollowingActivity ? await _api.GetFollowingDynamicsAsync(offset, owner.Token)
+                    : await _api.GetCreatorDynamicsAsync(_mid, offset, owner.Token);
                 if (!Current(owner)) return;
                 if (reset) { _dynamics.Clear(); _dynamicList.Items.Clear(); }
                 foreach (var item in result.Items)
@@ -438,6 +453,7 @@ namespace BiliXbox.Controls
                 _dynamicOffset = result.NextOffset ?? "";
                 _dynamicHasMore = result.HasMore && !string.IsNullOrEmpty(_dynamicOffset) && _dynamicOffset != offset;
                 _dynamicsLoaded = true;
+                DynamicsLoaded?.Invoke(result.Items);
                 SetBrowseNotice(HubPane.Dynamics, (_dynamics.Count == 0 ? "暂未读取到公开动态。" : "已加载 " + _dynamics.Count + " 条动态，按 A 查看全文和评论。") + " " + result.Notice
                     + (result.HasMore && !_dynamicHasMore ? " 平台未提供新的分页位置，可刷新重试。" : ""));
             }
@@ -459,6 +475,7 @@ namespace BiliXbox.Controls
             _comments.Clear(); _replies.Clear(); _commentList.Items.Clear(); _replyList.Items.Clear();
             SelectDraft(); _draftState?.DisarmRetry();
             _pane = HubPane.Detail;
+            DynamicViewed?.Invoke(item);
             _detailContent.Children.Clear(); AppendDynamic(_detailContent, item, false);
             _detailVideo.Visibility = FindDynamicVideo(item) == null ? Visibility.Collapsed : Visibility.Visible;
             _detailScroll.ChangeView(null, 0, null, true);
@@ -552,12 +569,17 @@ namespace BiliXbox.Controls
             finally { if (owner == _replyCts && CurrentComment(commentOwner, target)) { _repliesBusy = false; UpdateActions(); } }
         }
 
-        public async Task WriteCommentAsync()
+        public async Task WriteCommentAsync(bool replyToFocused = false)
         {
             if (_writing || _posting) return;
             EnsureSession();
             var card = FocusedCommentCard();
-            if (card != null && !SelectReplyTarget(card.Item)) return;
+            if (replyToFocused || _pane == HubPane.Replies)
+            {
+                var targetComment = card?.Item ?? _composeReply ?? _replyRoot;
+                if (!SelectReplyTarget(targetComment)) { _commentHint.Text = "请先选择要回复的评论"; return; }
+            }
+            else ResetReplyTarget();
             ClearCommentActions();
             SelectDraft();
             if (!IsDetail || _target == null || !_target.IsAvailable || !_target.CanPost || _commentClosed || _draftState?.InFlight == true || _writing) return;
@@ -587,7 +609,8 @@ namespace BiliXbox.Controls
                     if (_draftEditor.IsFocusEngaged) _draftEditor.IsFocusEngaged = false;
                     _draftEditor.IsReadOnly = true;
                     UpdateActions();
-                    Focus(completed && !string.IsNullOrWhiteSpace(_draft) ? (Control)_send : _draftEditor);
+                    Focus(completed && !string.IsNullOrWhiteSpace(_draft) ? (Control)_send
+                        : string.IsNullOrWhiteSpace(_draft) ? (Control)_write : _draftEditor);
                 }
             }
         }
@@ -597,7 +620,7 @@ namespace BiliXbox.Controls
             _draftEditor.TextChanged += DraftEditor_TextChanged;
             _draftEditor.Tapped += (sender, args) =>
             {
-                if (!_writing && _draftEditor.IsReadOnly && ReferenceEquals(sender, _draftEditor)) Run(WriteCommentAsync);
+                if (!_writing && _draftEditor.IsReadOnly && ReferenceEquals(sender, _draftEditor)) Run(() => WriteCommentAsync(_composeReply != null));
             };
         }
 
@@ -657,6 +680,7 @@ namespace BiliXbox.Controls
 
         private void ApplyPane()
         {
+            _browseTabs.Visibility = IsDetail ? Visibility.Collapsed : Visibility.Visible;
             if (!IsDetail) _notice.Text = _pane == HubPane.Videos ? _videoNotice : _dynamicNotice;
             _browse.Visibility = IsDetail ? Visibility.Collapsed : Visibility.Visible;
             _detail.Visibility = IsDetail ? Visibility.Visible : Visibility.Collapsed;
@@ -672,8 +696,9 @@ namespace BiliXbox.Controls
             SetTabAppearance(_videosTab, _pane == HubPane.Videos);
             SetTabAppearance(_dynamicsTab, _pane != HubPane.Videos);
             _hint.Text = _pane == HubPane.Replies ? "方向键选择 · A 选择图片 / 赞踩 · X 回复当前用户 · B 返回评论"
-                : IsDetail ? "方向键选择 · A 查看评论和回复 · X 回复当前用户 · B 返回动态" : "左摇杆 / 方向键选择 · A 确认 · B 返回";
+                : IsDetail ? "方向键选择 · A 查看评论和回复 · X 评论动态 · LB+X 回复用户 · B 返回动态" : "左摇杆 / 方向键选择 · A 确认 · B 返回";
             UpdateActions();
+            DiscussionLayoutChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private void UpdateActions()
@@ -694,6 +719,8 @@ namespace BiliXbox.Controls
             _send.IsEnabled = _write.IsEnabled && !string.IsNullOrWhiteSpace(_draft);
             _draftEditor.IsEnabled = available && _target.CanPost && !_commentClosed && !_posting;
             _draftEditor.IsReadOnly = !_writing;
+            _draftEditor.Visibility = _writing || !string.IsNullOrWhiteSpace(_draft) ? Visibility.Visible : Visibility.Collapsed;
+            _draftLabel.Visibility = _draftEditor.Visibility;
             if (!string.Equals(_draftEditor.Text, _draft, StringComparison.Ordinal))
             {
                 _updatingDraftEditor = true;

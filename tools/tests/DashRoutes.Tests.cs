@@ -22,6 +22,7 @@ namespace BiliXbox.DashRoutesTests
             Check(policy.ResolveRequest(new Uri(audio), "a0").AbsoluteUri == audio, "audio uses own primary");
             policy.ResolveRequest(new Uri(video), "concurrent-old");
             Check(policy.ReportFailure("v0"), "failed video rotates once");
+            Check(policy.FailureRouteOffset == 1, "terminal network rebuild keeps the replacement already chosen by DownloadFailed");
             Check(policy.NextRouteOffset == 2, "rebuild advances from native-selected route rather than stale UI offset");
             Check(!policy.ReportFailure("concurrent-old") && policy.RouteChangeCount == 1, "stale concurrent failure cannot skip next source");
             Check(policy.ResolveRequest(new Uri(video), "v1").AbsoluteUri == v1, "whole signed video backup preserved");
@@ -31,6 +32,8 @@ namespace BiliXbox.DashRoutesTests
             Check(policy.ReportFailure("v1") && policy.ResolveRequest(new Uri(video), "v2").AbsoluteUri == v2, "second video backup");
             Check(!policy.ReportFailure("v2") && policy.RouteChangeCount == 2, "all failures exhaust finite candidates");
             Check(!policy.ReportFailure("v2") && !policy.ReportFailure("missing"), "duplicate and unknown failure are inert");
+            Check(policy.ReportFailure("a0") && policy.FailureRouteOffset == 1,
+                "terminal audio download failure keeps its own replacement index rather than the last video index");
             var unknown = new Uri("https://other.example.test/manifest.mpd?private=1");
             Check(policy.ResolveRequest(unknown, "unknown") == unknown && !policy.ReportFailure("unknown"), "unrelated resource never rewritten");
             var manual = new Services.DashRoutePolicy(xml, v, a, 1);

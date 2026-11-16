@@ -1604,6 +1604,9 @@ try {
     }
     if ($SnapshotOnly) {
         Read-AppNotices
+        Read-AppProviderSnapshot 'snapshot-only'
+        $snapshotAnchor = Wait-AppElement -AnyName -AutomationId 'VideoGrid' -Seconds 5
+        if ($snapshotAnchor) { Save-AppScreenshot $snapshotAnchor 'compact-home-native' }
         $report.Completed = $true
     } elseif ($CommentsOnly) {
         Test-CommentsReadOnly

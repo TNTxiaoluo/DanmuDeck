@@ -14,10 +14,36 @@ namespace BiliXbox.Services
     {
         private const string LiveApi = "https://api.live.bilibili.com";
 
-        public async Task<LiveRoomPage> GetLiveRoomsAsync(int page = 1, CancellationToken ct = default(CancellationToken))
+        public Task<LiveRoomPage> GetLiveRoomsAsync(int page = 1, CancellationToken ct = default(CancellationToken))
+            => GetLiveRoomsAsync(page, 0, 0, ct);
+
+        public async Task<IReadOnlyList<LiveArea>> GetLiveAreasAsync(CancellationToken ct = default(CancellationToken))
+        {
+            var root = await LiveGetAsync("/room/v1/Area/getList", 0, ct);
+            int code = ResponseCode(root); if (code != 0) throw ApiError(code, Str(root, "message"));
+            var data = root["data"] as JArray;
+            if (data == null) throw LiveFormatError("直播分类");
+            var result = new List<LiveArea>();
+            foreach (var parent in data)
+            {
+                long id = Number(parent, "id"); string name = PlainText(Str(parent, "name"));
+                if (id <= 0 || string.IsNullOrWhiteSpace(name) || result.Any(item => item.Id == id)) continue;
+                var children = (parent["list"] as JArray ?? new JArray())
+                    .Where(child => Number(child, "id") > 0 && !string.IsNullOrWhiteSpace(Str(child, "name"))
+                        && (Number(child, "parent_id") == 0 || Number(child, "parent_id") == id))
+                    .GroupBy(child => Number(child, "id")).Select(group => group.First())
+                    .Select(child => new LiveArea { Id = Number(child, "id"), ParentId = id, Name = PlainText(Str(child, "name")) }).ToArray();
+                result.Add(new LiveArea { Id = id, Name = name, Children = children });
+            }
+            return result;
+        }
+
+        public async Task<LiveRoomPage> GetLiveRoomsAsync(int page, long parentAreaId, long areaId, CancellationToken ct = default(CancellationToken))
         {
             CheckPage(page);
-            var data = RequireData(await LiveGetAsync("/room/v3/area/getRoomList?platform=web&parent_area_id=0&area_id=0&sort_type=online&page_size=20&page=" + Invariant(page), 0, ct));
+            if (parentAreaId < 0 || areaId < 0 || (parentAreaId == 0 && areaId != 0)) throw new ArgumentOutOfRangeException(nameof(areaId));
+            var data = RequireData(await LiveGetAsync("/room/v3/area/getRoomList?platform=web&parent_area_id=" + Invariant(parentAreaId)
+                + "&area_id=" + Invariant(areaId) + "&sort_type=online&page_size=20&page=" + Invariant(page), 0, ct));
             var list = data["list"] as JArray;
             if (list == null) throw LiveFormatError("直播列表");
             var rooms = list.Where(item => Number(item, "roomid") > 0).Select(MapLiveRoom).GroupBy(room => room.Id).Select(group => group.First()).ToList();

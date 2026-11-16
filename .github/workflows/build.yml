@@ -18,15 +18,60 @@ jobs:
       - name: Test release channels and numeric upgrade versions
         shell: pwsh
         run: ./tools/Test-ReleaseVersion.ps1
+      - name: Test watch later, following activity, PGC catalog and subtitles
+        shell: pwsh
+        run: ./tools/Test-ViewingApi.ps1
+      - name: Test end-of-video transitions and refresh chord
+        shell: pwsh
+        run: ./tools/Test-ViewingPlayback.ps1
+      - name: Test LB X refresh and contextual comment shortcuts
+        shell: pwsh
+        run: ./tools/Test-BrowseShortcuts.ps1
+      - name: Test visible focus frames and recycled containers
+        shell: pwsh
+        run: ./tools/Test-FocusFrame.ps1
+      - name: Test dynamic unread order and account read markers
+        shell: pwsh
+        run: ./tools/Test-DynamicReadState.ps1
+      - name: Test activity entry and stable author order during reading
+        shell: pwsh
+        run: ./tools/Test-ActivityAuthorNavigation.ps1
+      - name: Test fixed playback speed and temporary right trigger boost
+        shell: pwsh
+        run: ./tools/Test-PlaybackSpeed.ps1
+      - name: Test danmaku styles and premium authorization without writes
+        shell: pwsh
+        run: ./tools/Test-DanmakuPost.ps1
+      - name: Test exact audio-only DASH manifests
+        shell: pwsh
+        run: ./tools/Test-AudioOnlyManifest.ps1
+      - name: Test background deferrals and audio video source transitions
+        shell: pwsh
+        run: ./tools/Test-BackgroundPlayback.ps1
+      - name: Test player volume and mute persistence
+        shell: pwsh
+        run: ./tools/Test-PlayerVolume.ps1
+      - name: Test pause recommendations and late request isolation
+        shell: pwsh
+        run: ./tools/Test-PausedRecommendations.ps1
       - name: Test application navigation startup
         shell: pwsh
         run: ./tools/Test-AppNavigation.ps1
+      - name: Test live category API parsing and filter queries
+        shell: pwsh
+        run: ./tools/Test-LiveApi.ps1
+      - name: Test live category selection and late request isolation
+        shell: pwsh
+        run: ./tools/Test-LiveCategories.ps1
       - name: Test creator videos, dynamics, and comment targets
         shell: pwsh
         run: ./tools/Test-Creator.ps1
       - name: Test creator comment draft and pending submissions
         shell: pwsh
         run: ./tools/Test-CreatorCommentDraft.ps1
+      - name: Test dynamic comment and user reply composers
+        shell: pwsh
+        run: ./tools/Test-DynamicCommentComposer.ps1
       - name: Test account library pagination and authorized episode playback
         shell: pwsh
         run: ./tools/Test-AccountLibrary.ps1
@@ -90,6 +135,15 @@ jobs:
       - name: Test buffer and recovery integration
         shell: pwsh
         run: ./tools/Test-PlaybackTransportIntegration.ps1
+      - name: Test HDMI mode reuse and cancellation ownership
+        shell: pwsh
+        run: ./tools/Test-PlaybackDisplay.ps1
+      - name: Test concurrent display playback requests
+        shell: pwsh
+        run: ./tools/Test-PlaybackDisplayIntegration.ps1
+      - name: Test native DASH download status and resource ownership
+        shell: pwsh
+        run: ./tools/Test-AdaptivePlaybackSource.ps1
       - name: Test bounded local playback diagnostics
         shell: pwsh
         run: ./tools/Test-PlaybackDiagnostics.ps1

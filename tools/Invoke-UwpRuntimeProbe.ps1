@@ -16,7 +16,8 @@ param(
     [switch] $InteractionsOnly,
     [switch] $LiveOnly,
     [switch] $LoginOnly,
-    [switch] $CommentsOnly
+    [switch] $CommentsOnly,
+    [switch] $SnapshotOnly
 )
 
 Set-StrictMode -Version Latest
@@ -25,10 +26,10 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $packageFile = (Resolve-Path -LiteralPath $PackagePath).Path
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts'))
 $uiProbeFile = $null
-if (($InteractionsOnly -or $LiveOnly -or $LoginOnly -or $CommentsOnly) -and -not $UiProbeScriptPath) {
+if (($InteractionsOnly -or $LiveOnly -or $LoginOnly -or $CommentsOnly -or $SnapshotOnly) -and -not $UiProbeScriptPath) {
     throw 'A targeted mode requires the explicitly selected workspace UI probe script.'
 }
-if (@(@($InteractionsOnly, $LiveOnly, $LoginOnly, $CommentsOnly) | Where-Object { $_ }).Count -gt 1) { throw 'Choose one UI probe mode.' }
+if (@(@($InteractionsOnly, $LiveOnly, $LoginOnly, $CommentsOnly, $SnapshotOnly) | Where-Object { $_ }).Count -gt 1) { throw 'Choose one UI probe mode.' }
 if ($UiProbeScriptPath) {
     $uiProbeFile = (Resolve-Path -LiteralPath $UiProbeScriptPath -ErrorAction Stop).Path
     $allowedUiProbe = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'Probe-CreatorUi.ps1'))
@@ -132,6 +133,7 @@ namespace BiliXboxRuntimeProbe {
         if ($LiveOnly) { $uiArguments += '-LiveOnly' }
         if ($LoginOnly) { $uiArguments += '-LoginOnly' }
         if ($CommentsOnly) { $uiArguments += '-CommentsOnly' }
+        if ($SnapshotOnly) { $uiArguments += '-SnapshotOnly' }
         $uiProcess = Start-Process -FilePath $uiShell -ArgumentList $uiArguments -WindowStyle Hidden -RedirectStandardOutput $uiOutputPath -RedirectStandardError $uiErrorPath -PassThru
         $uiClock = [Diagnostics.Stopwatch]::StartNew()
         while (-not $uiProcess.WaitForExit(500) -and $uiClock.Elapsed.TotalSeconds -lt 150) { }
@@ -139,7 +141,7 @@ namespace BiliXboxRuntimeProbe {
         if ($uiTimedOut) { $uiProcess.Kill(); $uiProcess.WaitForExit(2000) | Out-Null }
         $report.UiProbe = [ordered]@{
             ScriptPath = $uiProbeFile
-            Mode = if ($CommentsOnly) { 'CommentsOnly' } elseif ($LoginOnly) { 'LoginOnly' } elseif ($LiveOnly) { 'LiveOnly' } elseif ($InteractionsOnly) { 'InteractionsOnly' } else { 'Full' }
+            Mode = if ($SnapshotOnly) { 'SnapshotOnly' } elseif ($CommentsOnly) { 'CommentsOnly' } elseif ($LoginOnly) { 'LoginOnly' } elseif ($LiveOnly) { 'LiveOnly' } elseif ($InteractionsOnly) { 'InteractionsOnly' } else { 'Full' }
             ExitCode = if ($uiProcess.HasExited) { $uiProcess.ExitCode } else { $null }
             TimedOut = $uiTimedOut
             ReportPath = $uiReportPath

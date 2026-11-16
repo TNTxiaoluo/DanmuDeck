@@ -143,6 +143,24 @@ namespace BiliXbox.Services
             return manifest.ToString(SaveOptions.DisableFormatting);
         }
 
+        // Retain the exact server-provided audio representation and SegmentBase.
+        // A background audio source must not keep a 4K video decoder alive.
+        internal static string AudioOnly(string manifest)
+        {
+            XDocument document;
+            using (var text = new System.IO.StringReader(manifest ?? ""))
+            using (var reader = System.Xml.XmlReader.Create(text, new System.Xml.XmlReaderSettings
+                { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null }))
+                document = XDocument.Load(reader);
+            var period = document.Root?.Element(Ns + "Period");
+            var audio = period?.Elements(Ns + "AdaptationSet")
+                .Where(item => (string)item.Attribute("contentType") == "audio").ToArray();
+            if (audio == null || audio.Length != 1 || audio[0].Elements(Ns + "Representation").Count() != 1)
+                throw new InvalidOperationException("没有可用于后台播放的独立音轨。");
+            foreach (var item in period.Elements(Ns + "AdaptationSet").Where(item => item != audio[0]).ToArray()) item.Remove();
+            return document.ToString(SaveOptions.DisableFormatting);
+        }
+
         private static XElement Adaptation(JToken track, string kind, string id)
         {
             var segment = track["SegmentBase"] ?? track["segment_base"];

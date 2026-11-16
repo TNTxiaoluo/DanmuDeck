@@ -40,7 +40,7 @@ namespace BiliXbox.Controls
         // This is a consuming decision, so call it once per playback sample.
         public bool ShouldSwitch(DateTimeOffset now, TimeSpan mediaPosition,
             bool wantsPlayback, bool waiting, bool seekingOrModal,
-            double bufferedSeconds, bool hasAlternates)
+            double bufferedSeconds, bool hasAlternates, bool receivingData = false)
         {
             bool clockMoved = _hasSample &&
                 Math.Abs((mediaPosition - _lastPosition).TotalSeconds) > 0.0001;
@@ -50,7 +50,7 @@ namespace BiliXbox.Controls
             _lastSampleAt = now;
 
             bool starving = double.IsNaN(bufferedSeconds) || bufferedSeconds < 1;
-            if (!wantsPlayback || !waiting || seekingOrModal || !starving || !hasAlternates)
+            if (!wantsPlayback || !waiting || seekingOrModal || !starving || !hasAlternates || receivingData)
             {
                 _waitingSince = null;
                 return false;
@@ -70,6 +70,19 @@ namespace BiliXbox.Controls
             // A long gap between samples grants one decision, not a backlog of
             // missed decisions. Even a failed source change gets a fresh wait.
             _waitingSince = now;
+            return true;
+        }
+
+        // A terminal native network error cannot recover in place. Give the
+        // exact same track another real CDN route before consuming its codec
+        // fallback. Share the watchdog budget so mixed failures cannot loop.
+        public bool TrySwitchAfterFailure(DateTimeOffset now, bool hasAlternates)
+        {
+            if (!hasAlternates || Attempts >= MaximumAttempts) return false;
+            ++Attempts;
+            _lastSwitchAt = now;
+            _waitingSince = null;
+            _hasSample = false;
             return true;
         }
     }

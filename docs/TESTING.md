@@ -1,5 +1,11 @@
 # 测试
 
+动态、倍速及弹幕样式回归新增 `Test-ActivityAuthorNavigation`、`Test-PlaybackSpeed`、`Test-DanmakuPost`，分别执行真实生产代码的入口焦点/会话内排序、RT 与固定速率、会员/精确发送参数检查。弹幕发送仅使用内存 HTTP 替身，不发送真实评论。`Test-NativeTextInput` 同时检查样式下拉框与 B/系统返回的竞争，`Test-Danmaku` 检查三种源字号的显示。
+
+直播分类新增 `tools/Test-LiveCategories.ps1`，检查实际分类控件的选择、取消、分页、焦点及旧请求隔离；`tools/Test-LiveApi.ps1` 覆盖一级/二级分区解析和筛选参数，附加 `-PublicReadOnly` 可用匿名 GET 核对当前平台接口。首页收藏入口沿用 `Test-AccountNavigation.ps1` 的账号与返回路径检查。
+
+最新开发测试功能及 Xbox 操作步骤见 [1.0.2b 观看体验测试](VIEWING-UPDATE-TESTING.md)。新增离线检查包含 `Test-ViewingApi`、`Test-ViewingPlayback`、`Test-BrowseShortcuts`、`Test-FocusFrame`、`Test-DynamicReadState`、`Test-AudioOnlyManifest` 和 `Test-BackgroundPlayback`（均位于 `tools/`）。它们分别检查生产代码的接口解析、结束模式、组合键上下文、白框状态、账号未读位置、独立音轨清单和后台切换保护；不代表 Xbox 实机验证通过。
+
 测试脚本位于 `tools/`，替身和用例位于 `tools/tests/`。从项目根目录使用 PowerShell 7，每个脚本启动独立的 `pwsh` 进程，避免重复加载同名测试类型。
 
 ## 日常检查

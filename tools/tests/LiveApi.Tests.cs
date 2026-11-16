@@ -81,6 +81,8 @@ namespace BiliXbox.LiveApiTests
                 await Reject(() => client.SendLiveGiftAsync(new LiveGiftQuote(), false), "unconfirmed gift denied");
                 await Reject(() => client.SendLiveDanmakuAsync(1, "\n"), "control-only message denied");
                 await Reject(() => client.GetLiveRoomsAsync(0), "invalid page denied");
+                await Reject(() => client.GetLiveRoomsAsync(1, -1, 0), "negative parent category denied");
+                await Reject(() => client.GetLiveRoomsAsync(1, 0, 86), "child category without parent denied");
                 Check(Transport.Requests.Count == 0, "validation sends no anonymous writes");
             }
             Stub(request => Ok(new JObject { ["count"] = 42, ["list"] = new JArray(new JObject { ["roomid"] = 12345678901L, ["uid"] = 424242, ["title"] = "测试 &amp; 直播", ["uname"] = "主播", ["area_v2_id"] = 6, ["online"] = 12000 }) }));
@@ -90,6 +92,33 @@ namespace BiliXbox.LiveApiTests
                 Check(page.Page == 2 && page.HasMore && page.Items.Count == 1 && page.Items[0].Id == 12345678901L && page.Items[0].Title == "测试 & 直播", "live page and 64-bit room ID map exactly");
                 Check(Transport.Requests[0].Uri.Query.Contains("page=2") && Posts == 0, "real pagination query read-only");
             }
+            Stub(request => Ok(new JArray(
+                new JObject { ["id"] = 2, ["name"] = "网游", ["list"] = new JArray(
+                    new JObject { ["id"] = "86", ["parent_id"] = "2", ["name"] = "英雄联盟" },
+                    new JObject { ["id"] = "86", ["parent_id"] = "2", ["name"] = "duplicate" },
+                    new JObject { ["id"] = 90, ["parent_id"] = 3, ["name"] = "wrong parent" },
+                    new JObject { ["id"] = 0, ["name"] = "invalid" }) },
+                new JObject { ["id"] = 1, ["name"] = "娱乐 &amp; 生活", ["list"] = new JArray() },
+                new JObject { ["id"] = 2, ["name"] = "duplicate parent" }, new JObject { ["id"] = 0, ["name"] = "invalid" })));
+            using (var client = new BilibiliClient())
+            {
+                var areas = await client.GetLiveAreasAsync();
+                Check(areas.Count == 2 && areas[0].Id == 2 && areas[1].Name == "娱乐 & 生活", "Real category order, ID, text and duplicate parents");
+                Check(areas[0].Children.Count == 1 && areas[0].Children[0].ParentId == 2 && areas[0].Children[0].Id == 86, "Subcategory IDs parse strings, deduplicate and retain matching parent");
+                Check(Transport.Requests.Single().Uri.AbsolutePath == "/room/v1/Area/getList" && Posts == 0, "Category catalogue uses actual read-only endpoint");
+            }
+            Stub(request => Ok(new JObject { ["list"] = new JArray(), ["count"] = 0 }));
+            using (var client = new BilibiliClient())
+            {
+                var rooms = await client.GetLiveRoomsAsync(3, 2, 86);
+                string query = Transport.Requests.Last().Uri.Query;
+                Check(query.Contains("parent_area_id=2") && query.Contains("area_id=86") && query.Contains("page=3"), "Chosen parent and child survive pagination");
+                Check(rooms.Items.Count == 0 && !rooms.HasMore, "Empty category is genuinely empty");
+                await client.GetLiveRoomsAsync(1, 2, 0);
+                Check(Transport.Requests.Last().Uri.Query.Contains("parent_area_id=2&area_id=0"), "Whole parent area query");
+            }
+            Stub(request => Ok(new JObject()));
+            using (var client = new BilibiliClient()) { await Reject(() => client.GetLiveAreasAsync(), "Malformed category list rejected"); }
             Stub(request => request.RequestUri.AbsolutePath.Contains("get_info") ? Room() : Master());
             using (var client = new BilibiliClient()) { var room = await client.GetLiveRoomAsync(6); Check(room.Id == 12345678901L && room.OwnerMid == 424242 && room.OwnerName == "测试主播" && room.IsLive, "short room resolves to real ID and actual owner"); }
             Stub(request => Playback());

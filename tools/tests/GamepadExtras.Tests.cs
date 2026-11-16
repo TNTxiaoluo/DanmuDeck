@@ -1,6 +1,6 @@
 namespace Windows.Gaming.Input
 {
-    [Flags] public enum GamepadButtons { None = 0, LeftShoulder = 1, RightShoulder = 2 }
+    [Flags] public enum GamepadButtons { None = 0, LeftShoulder = 1, RightShoulder = 2, Y = 4, X = 8 }
     public struct GamepadReading { public GamepadButtons Buttons; public double RightThumbstickY; }
 }
 namespace Windows.System
@@ -53,6 +53,17 @@ namespace BiliXbox
         private bool _disposed, _dialogOpen, _inputPaneVisible, IsNativeGamepadEditorActive, RawGamepadOwnsNavigation;
         private bool _watching, _creatorVisible, _libraryVisible, _liveVisible, _gamepadHomeFeedReplacing, _viewingReplies;
         private bool _gamepadHomeInitialFocusDone;
+        private bool _rawLb, _lbChordUsed, _virtualLb;
+        private bool _pausedRecommendationsVisible;
+        private bool _pausedPullReady = true;
+        private bool CanOpenPausedRecommendations => false;
+        private Task OpenPausedRecommendationsAsync() => Task.CompletedTask;
+        private readonly ShoulderChordState _viewingChord = new ShoulderChordState();
+        private int _refreshes;
+        private bool IsCommentReplySurface;
+        private void RunTargetedCommentReply() { }
+        private void RunViewingChord(bool refresh) { if (refresh) ++_refreshes; }
+        /* PRODUCTION_CHORD */
         private readonly FeedNavigationState _feedNavigation = new FeedNavigationState();
         private HomeSection? _pendingSection;
         private readonly ExtraView LiveHub = new ExtraView(), CreatorHub = new ExtraView(), AccountLibrary = new ExtraView();
@@ -218,6 +229,8 @@ namespace BiliXbox
                 page.PollAuxiliaryGamepad(new GamepadReading(), true);
                 page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(1033);
                 page.PollAuxiliaryGamepad(new GamepadReading { Buttons = GamepadButtons.LeftShoulder }, true);
+                page._gamepadClock.Elapsed = TimeSpan.FromMilliseconds(1066);
+                page.PollAuxiliaryGamepad(new GamepadReading(), true);
                 Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(30), "Released raw LB seeks back exactly five seconds");
                 Check(page._wantsPlayback == playing && page._resumeAfterOpen == playing && page._sections.Count == 0,
                     "Shoulder seeks preserve playing intent and never change home sections in player");

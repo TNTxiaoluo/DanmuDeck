@@ -142,6 +142,7 @@ namespace BiliXbox.Controls
                 return;
             }
             if (ReferenceEquals(current, _back)) { if (!Back()) CloseRequested?.Invoke(this, EventArgs.Empty); }
+            else if (ReferenceEquals(current, _continuous)) ToggleContinuousPlayback();
             else if (ReferenceEquals(current, _videosTab)) SwitchTab(HubPane.Videos);
             else if (ReferenceEquals(current, _dynamicsTab)) SwitchTab(HubPane.Dynamics);
             else if (ReferenceEquals(current, _refresh)) Run(RefreshAsync);
@@ -150,7 +151,7 @@ namespace BiliXbox.Controls
             else if (ReferenceEquals(current, _moreDynamics)) { if (_moreDynamics.IsEnabled) Run(() => LoadDynamicsAsync(false)); }
             else if (ReferenceEquals(current, _refreshComments)) { if (_refreshComments.IsEnabled) Run(() => _pane == HubPane.Replies ? LoadRepliesAsync(true) : LoadCommentsAsync(true)); }
             else if (ReferenceEquals(current, _write)) { if (_write.IsEnabled) Run(WriteNewCommentAsync); }
-            else if (ReferenceEquals(current, _draftEditor)) { if (_draftEditor.IsEnabled) Run(WriteCommentAsync); }
+            else if (ReferenceEquals(current, _draftEditor)) { if (_draftEditor.IsEnabled) Run(() => WriteCommentAsync(_composeReply != null)); }
             else if (ReferenceEquals(current, _send)) { if (_send.IsEnabled) Run(PostCommentAsync); }
             else if (ReferenceEquals(current, _login)) LoginRequested?.Invoke(this, EventArgs.Empty);
             else if (ReferenceEquals(current, _detailVideo)) RequestVideo(FindDynamicVideo(_dynamic));
@@ -160,7 +161,7 @@ namespace BiliXbox.Controls
 
         private List<Control> HeaderActions()
         {
-            var controls = new List<Control> { _back, _videosTab, _dynamicsTab, _refresh };
+            var controls = new List<Control> { _back, _continuous, _videosTab, _dynamicsTab, _refresh };
             if (IsDetail) { controls.Add(_refreshComments); controls.Add(_write); controls.Add(_send); controls.Add(_login); }
             return controls.Where(IsAvailable).ToList();
         }

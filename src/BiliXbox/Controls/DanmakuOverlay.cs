@@ -294,15 +294,15 @@ namespace BiliXbox.Controls
             }
             var block = visual.Element;
             block.Text = entry.Text;
-            block.FontSize = _fontSize;
+            block.FontSize = _fontSize * entry.FontSize / 25.0;
             block.Foreground = ColorBrush(entry.Rgb);
             block.MaxWidth = Math.Max(1, ActualWidth * 0.8);
             block.Opacity = _settings.Opacity;
-            if (entry.CachedFont != _fontSize || entry.CachedMaximum != block.MaxWidth || entry.CachedWidth <= 0)
+            if (entry.CachedFont != block.FontSize || entry.CachedMaximum != block.MaxWidth || entry.CachedWidth <= 0)
             {
                 block.Measure(new Size(block.MaxWidth, _lineHeight));
                 entry.CachedWidth = Math.Min(block.MaxWidth, Math.Max(1, block.DesiredSize.Width));
-                entry.CachedFont = _fontSize;
+                entry.CachedFont = block.FontSize;
                 entry.CachedMaximum = block.MaxWidth;
             }
             double width = entry.CachedWidth;
@@ -494,6 +494,7 @@ namespace BiliXbox.Controls
                 Seconds = item.Time,
                 Text = value,
                 Rgb = item.Color & 0xFFFFFF,
+                FontSize = item.FontSize == 18 || item.FontSize == 36 ? item.FontSize : 25,
                 Mode = item.Mode == 4 || item.Mode == 5 ? item.Mode : 1,
                 SenderHash = item.SenderHash ?? ""
             };
@@ -518,6 +519,7 @@ namespace BiliXbox.Controls
             public double Seconds;
             public string Text;
             public int Rgb;
+            public int FontSize;
             public int Mode;
             public string SenderHash;
             public bool Allowed;

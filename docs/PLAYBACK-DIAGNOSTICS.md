@@ -1,5 +1,43 @@
 # 播放诊断与 Xbox 验证
 
+## 2026-11-15：反馈视频核对与界面分辨率
+
+使用生产 WBI 签名逻辑、`qn=120/125`、`fnval=2000`、`fourk=1` 对两条反馈视频做了匿名只读查询：
+
+| 视频 | CID | 此次接口列出的高画质 | 说明 |
+| --- | --- | --- | --- |
+| `BV12Duu6aE9S`：幽灵行动“最后的仪式” | `40716993724` | `125,120,116` | 列出 HDR10 与 4K；匿名轨道仅到 480P，无法代替登录会员环境复现 HDR 加载失败。 |
+| `BV1HEf2YWEvs`：影视飓风杜比视界样片 | `28104724389` | `126,120,112` | 列出 Dolby Vision，没有列出 `125` HDR10。当前播放器未实现 Dolby Vision，播放设置应明确说明这一点，不能将 `126` 改名当作 HDR10。 |
+
+这两种现象不同：第一条仍需登录设备的原生错误/下载日志定位；第二条缺少 HDR10 选项与该次服务端的格式列表一致。系统“允许 HDR10/Dolby Vision”不代表每个视频都提供 HDR10，也不代表当前应用实现了 Dolby Vision 播放。匿名结果不证明账号拥有高画质权限或实际返回了 4K 流。
+
+界面以 1280×720 **逻辑单位**布局，Viewbox 和系统缩放决定最终显示大小；它既不能证明界面是 720P 光栅，也不能证明是原生 4K。微软的 [Xbox UWP 设计文档](https://learn.microsoft.com/en-us/previous-versions/windows/uwp/xbox-apps/designing-for-tv#scale-factor-and-adaptive-layout)描述了该平台的 1080P UI 与布局缩放；关闭布局缩放本身不会授权原生 4K UI。当前没有仅为界面强行切换 HDMI 模式。
+
+新日志 `ui-display` 记录窗口逻辑视口、系统像素比例和二者换算出的视口像素估计，启动及播放区域尺寸变化时记录，重复值不重复写入。`viewPixelsEstimate` 是估计，不是已测量的最终合成面或视频源尺寸；`native4kUiVerified=false` 明确表示未完成原生 4K 界面验证。实际视频是否为 4K 仍以轨道及原生媒体宽高、编码和输出日志核对。
+
+## 1.0.2b：加载失败与 HDMI 握手排查（2026-11-15）
+
+本轮反馈设备为 Xbox Series X 与三星 Q80T。截图显示 HDR10/4K 能力查询与 HDMI 模式请求通过，但下载为 0 KB/s、可播缓存为零；随后出现原生播放失败并降至 1080P。截图无法区分 CDN 请求失败、媒体源解析失败与解码失败，不能据此认定电视不支持 HDR。
+
+代码检查确认以下路径需要修正：原生 `NetworkError` 原本直接消费编码/画质回退；缺少可播缓存时，线路 watchdog 只观察播放时钟，未考虑下载仍有进展；重复播放请求会取消正在进行的 HDMI 准备；连续打开视频会先恢复桌面模式，再准备下一条视频。它们是已修正的代码行为，尚不能证明就是此设备故障的全部原因。
+
+- 下载仍有吞吐时保留播放源；下载停滞后原有八秒等待、冷却和最多两次线路恢复仍生效。
+- 原生网络错误优先用接口实际返回的备用地址重试同一轨道，保留进度。终端错误与 watchdog 共用重试预算；明确的解码错误保留原有音轨/编码回退，线路耗尽也保留自动画质回退。
+- `DownloadFailed` 已切换线路时，重建使用它已经选出的替代线路，不再次跳过该线路。
+- 并发播放请求共享同一次 HDMI 准备。分辨率和 EOTF 兼容时优先复用当前模式；进入/退出 HDR、SDR 或 1080P 桌面确实需要改变模式时仍会发生握手。媒体输出继续限定在微软文档支持的至多 60Hz；不通过使用 120Hz 模式消除黑屏。
+
+诊断日志增加 `route-probe-start/ready`、`source-open-ready`、`display-prepare-start/ready`、`native-media-error`、`media-download-failed`、`network-failure-route-retry`，以及每十秒至多一条 `transport-wait`。等待记录包含代次、原生状态、加载阶段、实际缓存、已请求/完成/失败的下载数、完成字节数、最近 HTTP 状态及下载 HRESULT；不写入签名 URL、Cookie 或原生错误消息。显示准备记录的 `action=keep/request` 用于确认是否真正发出了新模式请求，不能把它等同于解码验证。
+
+实机复测：
+
+1. 安装最新签名测试包，首页显示仍为 `1.0.2b`，在随包安装说明中核对内部安装版本。使用反馈者相同账号与同一 BV，先测普通 1080P，再测 SDR 4K 和 HDR10，每次至少持续两分钟。
+2. 分别记录 Xbox 系统分辨率、允许 4K/HDR10 的设置；关闭 HDR 后测试真实 SDR 4K 或明确标记的 HDR10→SDR 色调映射轨道。以实际分辨率与源信息判断画质，不以标题、HDMI 输出分辨率或电视提示代替源尺寸。
+3. 连续播放同一输出模式的两段视频，并执行暂停/继续。日志中后续准备应出现 `action=keep`，而非重复 `action=request`。切换 SDR/HDR 或退出回到系统桌面时允许必要的握手。
+4. 如果再次卡在零缓存，立即保存完整 `playback-diagnostics.log`。`requested=0`、已有请求但未完成、HTTP 403/503、解码 HRESULT 是不同故障；对照原生错误和下载事件确认。网络备用重试应保持原画质，次数有上限，真实解码失败仍应回退且不能循环重试。
+5. 同时验证弹幕、评论、字幕、拖动、三秒缓存恢复和主页历史入口。不能仅凭本机替身测试及构建通过声称 XSX/Q80T 的 HDR 已实测修复。
+
+微软依据：[Xbox 4K 媒体模式与色调映射](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/hevc-xbox)、[AdaptiveMediaSource 下载诊断](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/adaptive-streaming)。
+
 ## 1.0.7 HDR10 片源与 SDR 色调映射
 
 `BV12Bn86nEXE` 的问题需要分别回答「能否解码真实 4K HDR10 片源」和「能否向显示设备输出 HDR10」。只因后者不可用而把整个真实 4K 轨道排除，会让支持 4K SDR 的设备也没有 4K 选项。微软说明原生媒体管线支持 HDR10 内容在 SDR 显示模式中自动色调映射，参见 [Xbox 4K 显示模式文档](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/hevc-xbox)。
@@ -135,6 +173,8 @@
 日志在后台写入，并限制单条、队列和文件大小。包括请求参数、画质列表、权限标记、每条轨道的尺寸/编码/帧率/码率/位深、被排除原因、微软能力查询，以及原生播放器实际打开后的 `native=宽x高`。特殊帧率路径还记录接口、查询与原生帧率及校验/试播状态。不保存完整 API JSON、媒体地址、Cookie、密码或账号 ID。请等播放设置更新完成后再下载日志，按时间对照操作。
 
 ## Xbox 实机验证
+
+后台音频诊断新增 `background phase=...`、`revision`、`audioOnly`、`wantsPlayback`、`memoryBytes` 和 `memoryLimitBytes`。DASH 切后台后以同视频独立音轨替换视频源，再恢复桌面 HDMI；返回时恢复原画质与进度。`background-audio-opened native=0x0` 表示纯音频，不是视频解码失败。异常记录 `background-failed phase=... hresult=...`。请连做 10 次前后台切换，并包含快速往返和系统媒体暂停；若应用被系统结束，日志末尾和 Xbox Device Portal 的崩溃记录需要一并核对。录像中出现启动画面和回到首页只能确认重启，不能单凭它区分原生崩溃与系统回收。
 
 1. 安装本次签名测试包，登录与手机相同的大会员账号。选用同一个 BV 和分 P，例如报告问题时使用的 `BV1d4411N7zD`。
 2. Xbox 首页输出设置为 1080P，保持“允许 4K”开启，先以 1080P 播放，再打开画质设置选择 4K。记录选项是否出现、当前实际尺寸及是否成功切换 HDMI。

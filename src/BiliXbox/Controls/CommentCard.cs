@@ -58,7 +58,7 @@ namespace BiliXbox.Controls
         private TextBlock _likeCount;
         private bool _reactionBusy;
 
-        public CommentCard() { IsTabStop = false; }
+        public CommentCard() { IsTabStop = false; HorizontalContentAlignment = HorizontalAlignment.Stretch; HorizontalAlignment = HorizontalAlignment.Stretch; }
         public void RequestReplies()
         {
             if (ShowThreadButton && Item != null) RepliesRequested?.Invoke(this, new CommentRepliesRequestedEventArgs(Item));
@@ -190,7 +190,8 @@ namespace BiliXbox.Controls
             if (!compact && CommentRichPresentation.HasPictures(item)) panel.Children.Add(BuildPictures(item));
             if (compact)
             {
-                var metadata = new TextBlock { Text = CommentRichPresentation.Metadata(item, true), Foreground = Brush(150, 242, 242, 247), FontSize = 12, TextWrapping = TextWrapping.Wrap };
+                var metadata = new TextBlock { Text = CommentRichPresentation.Metadata(item, true), Foreground = Brush(150, 242, 242, 247), FontSize = 12, TextWrapping = TextWrapping.Wrap,
+                    HorizontalAlignment = HorizontalAlignment.Right, TextAlignment = TextAlignment.Right };
                 _previewMetadata[metadata] = item;
                 panel.Children.Add(metadata);
             }
@@ -203,7 +204,8 @@ namespace BiliXbox.Controls
                 footer.Children.Add(new TextBlock
                 {
                     Text = CommentRichPresentation.Metadata(item, false), Foreground = Brush(150, 242, 242, 247), FontSize = 12,
-                    TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center
+                    TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Right, TextAlignment = TextAlignment.Right
                 });
                 _likeButton = ActionButton("", () => RequestVote(CommentVote.Like));
                 _hateButton = ActionButton("", () => RequestVote(CommentVote.Hate));

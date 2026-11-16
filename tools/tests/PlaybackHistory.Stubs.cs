@@ -258,11 +258,12 @@ namespace BiliXbox.Controls
 {
     public sealed class AccountLibraryView
     {
-        private enum LibraryPane { Overview, History }
+        private enum LibraryPane { Overview, History, Activity }
+        private void RestoreActivityFocus() { }
         private sealed class ViewState { public LibraryPane Pane; public bool NeedsRefresh; public int SelectedIndex = 0; }
         private readonly ViewState _state = new ViewState { Pane = LibraryPane.History };
         private readonly Stack<ViewState> _trail = new Stack<ViewState>();
-        private readonly Control _back = new Control(), _history = new Control(), _favorites = new Control(), _follows = new Control();
+        private readonly Control _back = new Control(), _history = new Control(), _favorites = new Control(), _follows = new Control(), _watchLater = new Control(), _activity = new Control();
         private Control _lastFocus;
         private sealed class TestList { public List<object> Items = new List<object>(); }
         private readonly TestList ActiveList = new TestList();

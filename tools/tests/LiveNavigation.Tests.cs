@@ -103,7 +103,7 @@ namespace BiliXbox
         private readonly object _api = new object();
         private readonly LiveNavigationView LiveHub = new LiveNavigationView();
         private readonly Button LiveSectionButton = new Button { Tag = "Live" }, HomeButton = new Button(), PopularSectionButton = new Button { Tag = "Popular" },
-            AnimationSectionButton = new Button { Tag = "Animation" }, FilmSectionButton = new Button { Tag = "Film" },
+            AnimationSectionButton = new Button { Tag = "Animation" }, FilmSectionButton = new Button { Tag = "Film" }, FilmGenreButton = new Button(),
             HeaderSearchButton = new Button(), AccountButton = new Button(), HelpButton = new Button();
         private readonly FeedNavigationState _feedNavigation = new FeedNavigationState();
         private readonly TextBox SearchInput = new TextBox();

@@ -12,6 +12,10 @@ namespace BiliXbox
     {
         private PlaybackDisplayController _playbackDisplay;
         private CancellationTokenSource _displayPlayCts;
+        private Task _displayPlayTask;
+        private object _displayPlaySource;
+        private CancellationTokenSource _displayPlayWatch;
+        private int _displayPlayGeneration;
         private volatile bool _displaySuspended;
 
         // The page calls these methods on its UI dispatcher. Constructing a
@@ -27,10 +31,12 @@ namespace BiliXbox
             {
                 token.ThrowIfCancellationRequested();
                 if (_displaySuspended) throw new OperationCanceledException(token);
+                RecordPlaybackTrack("display-prepare-start", playback);
                 if (await PlaybackDisplay.PrepareAsync(playback, token))
                 {
                     token.ThrowIfCancellationRequested();
                     if (_displaySuspended) throw new OperationCanceledException(token);
+                    RecordPlaybackTrack("display-prepare-ready", playback, " " + PlaybackDisplay.Diagnostic);
                     if (failure.Length > 0) playback.QualityNotice = failure + "改用实际 " + playback.Quality
                         + (playback.UsesSdrToneMapping ? " SDR（HDR10 源，系统色调映射）" : playback.IsHdr10 ? " HDR10" : " SDR") + " 播放源。";
                     return playback;
@@ -53,11 +59,28 @@ namespace BiliXbox
             if (display == null) return;
             try { await display.ResetAsync(); }
             catch (Exception) { /* Playback is already paused; a later prepare retries the output mode. */ }
-            if (!_disposed && _watching) UpdateQualities();
+            if (!_disposed && _watching && !_inBackground) UpdateQualities();
         }
 
-        private async Task PlayWithDisplayAsync()
+        private Task PlayWithDisplayAsync()
         {
+            // MediaOpened, SMTC and the refill policy can request play together.
+            // Share the in-flight preparation instead of cancelling an OS HDMI
+            // request which cannot itself be cancelled (and forces a reset).
+            if (_displayPlayTask != null && !_displayPlayTask.IsCompleted
+                && _displayPlayCts != null && !_displayPlayCts.IsCancellationRequested
+                && ReferenceEquals(_displayPlaySource, _media.Source)
+                && _displayPlayGeneration == _partGeneration && _displayPlayWatch == _watchCts)
+                return _displayPlayTask;
+            _displayPlaySource = _media.Source;
+            _displayPlayGeneration = _partGeneration;
+            _displayPlayWatch = _watchCts;
+            return _displayPlayTask = PlayWithDisplayCoreAsync();
+        }
+
+        private async Task PlayWithDisplayCoreAsync()
+        {
+            if (_inBackground && _backgroundAudio && _wantsPlayback && _watching && _media.Source != null) { _media.Play(); return; }
             if (_disposed || !_watching || _displaySuspended || !_wantsPlayback || _libraryVisible || _creatorVisible
                 || _media.Source == null || _playback == null || _watchCts == null) return;
             CancelDisplayPlayRequest();
@@ -115,6 +138,7 @@ namespace BiliXbox
         public async Task SuspendPlaybackAsync()
         {
             var historyFlush = FlushPlaybackHistoryAsync();
+            if (_backgroundAudio && _inBackground && _watching) { SuspendGamepadInput(); await historyFlush; return; }
             _displaySuspended = true;
             ++_partGeneration;
             Cancel(ref _partCts);

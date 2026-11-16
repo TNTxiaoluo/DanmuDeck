@@ -2,7 +2,7 @@
 
 开发测试签名和正式商店身份采用独立流程。开源代码不包含发布者的私钥、真实商店关联文件或既有商店上传包。
 
-本次正式送审版本为 `1.0.2`，包版本为 `1.0.2.0`；商店说明可直接使用 [1.0.2 发布说明](RELEASE-NOTES-1.0.2.md)中的简版。此前开发测试改进已整合到该正式版本，详见 [更新日志](../CHANGELOG.md)。正式版本号表示本次提交使用的标识，不表示审核已通过。
+本次准备送审版本为 `1.0.3`，包版本为 `1.0.3.0`；商店说明可直接使用 [1.0.3 发布说明](RELEASE-NOTES-1.0.3.md)中的简版。本轮 `1.0.2b` 测试改进已整合，详见 [更新日志](../CHANGELOG.md)。正式版本号表示本次准备提交使用的标识，不表示已经提交或审核通过。
 
 ## 配置自己的产品身份
 
@@ -25,14 +25,14 @@ Copy-Item -LiteralPath tools/Package.StoreAssociation.example.xml -Destination t
 按 [BUILDING.md](BUILDING.md) 安装工具后执行：
 
 ```powershell
-pwsh -NoProfile -File tools/Build-StoreUpload.ps1 -StoreAssociationPath tools/Package.StoreAssociation.xml -Version 1.0.2.0
+pwsh -NoProfile -File tools/Build-StoreUpload.ps1 -StoreAssociationPath tools/Package.StoreAssociation.xml -Version 1.0.3.0
 ```
 
 工具使用微软 MSBuild 的 `StoreUpload` 模式，在隔离副本中覆盖商店身份、显示名称和版本，输出到 `artifacts/StoreUpload/`。上传容器扩展名由工具链确定为 `.msixupload` 或 `.appxupload`，内部包含应用包和调试符号。构建同时校验包身份、版本、品牌资源、符号及数据块。
 
 可用 `-PrepareOnly` 只生成构建计划，或用 `-Version` 指定本次包版本。版本采用 `Major.Minor.Build.0`；正式上传包的界面版本不带测试 `b` 后缀，后续开发测试交付则保留该后缀。字母后缀不写入 APPX/MSIX 的数字包版本。`-MSBuildPath` 可指定自己的 MSBuild，`-OutputDirectory` 必须位于项目工作区内。
 
-Store 上传构建不使用本机开发证书签名，签名由商店流程处理。脚本不执行上传或发布。开发者模式安装请使用 [BUILDING.md](BUILDING.md) 中的已签名测试包流程。
+省略 `-Version` 时，脚本读取当前源码清单的正式版本基线。Store 上传构建不使用本机开发证书签名，签名由商店流程处理。脚本不执行上传或发布。开发者模式安装请使用 [BUILDING.md](BUILDING.md) 中的已签名测试包流程。
 
 ## Xbox HEVC / 4K / HDR10
 

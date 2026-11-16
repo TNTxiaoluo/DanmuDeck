@@ -81,6 +81,7 @@ namespace Windows.UI.ViewManagement.Core
 }
 namespace Windows.UI.Xaml
 {
+    public class FrameworkElement { }
     public sealed class RoutedEventArgs : global::System.EventArgs { }
     public enum ElementTheme { Dark }
     public enum RequiresPointer { Never }
@@ -115,6 +116,12 @@ namespace Windows.UI.Xaml.Input
 }
 namespace Windows.UI.Xaml.Controls
 {
+    public class Panel : FrameworkElement { public readonly global::System.Collections.Generic.List<object> Children = new global::System.Collections.Generic.List<object>(); }
+    public sealed class StackPanel : Panel { public double Spacing; }
+    public sealed class ComboBox : FrameworkElement {
+        private bool open;public bool IsDropDownOpen { get=>open;set { bool was=open;open=value;if(was&&!value)DropDownClosed?.Invoke(this,new object()); } }
+        public event global::System.EventHandler<object> DropDownClosed;
+    }
     public sealed class TextCompositionStartedEventArgs { }
     public sealed class TextCompositionEndedEventArgs { }
     public delegate void CompositionStarted(TextBox sender, TextCompositionStartedEventArgs args);
@@ -238,7 +245,7 @@ namespace BiliXbox.NativeTextInputTests
         }
         private static void AgeBack(NativeTextInputDialog dialog)
         {
-            foreach (string field in new[] { "_lastBackTimestamp", "_lastNativeHideTimestamp" })
+            foreach (string field in new[] { "_lastBackTimestamp", "_lastNativeHideTimestamp", "_lastOptionsHideTimestamp" })
                 typeof(NativeTextInputDialog).GetField(field, global::System.Reflection.BindingFlags.NonPublic |
                     global::System.Reflection.BindingFlags.Instance).SetValue(dialog, global::System.Diagnostics.Stopwatch.GetTimestamp() -
                     global::System.Diagnostics.Stopwatch.Frequency);
@@ -323,6 +330,18 @@ namespace BiliXbox.NativeTextInputTests
             Check(CoreInputView.GetForCurrentView().ShowCount == 1 && reopened.QueryText == "保留文字",
                 "A fresh search request failed to reopen the native keyboard.");
             reopened.Hide();
+            var options = new StackPanel(); var choice = new ComboBox(); options.Children.Add(choice);
+            dialog = new NativeTextInputDialog("draft", "发送弹幕", "发送", 100, options);
+            var layout = (StackPanel)dialog.Content;
+            Check(layout.Children[0] == options && layout.Children[1] is TextBox, "Composer options and native editor share one dialog.");
+            dialog.Open(); dialog.Dispatcher.Flush(); choice.IsDropDownOpen = true;
+            dialog.RequestBack();
+            Check(!choice.IsDropDownOpen && !dialog.ClosedState, "B closes style dropdown before cancelling composer.");
+            dialog.PlatformBack(); Check(!dialog.ClosedState, "Duplicate shell B does not cancel after dropdown closes.");
+            AgeBack(dialog); dialog.Key(VirtualKey.GamepadY); dialog.Dispatcher.Flush();
+            Check(dialog.Content == layout && layout.Children.Count == 2 && layout.Children[0] == options,
+                "Renewing native editor keeps the same style controls without duplicate parents.");
+            dialog.Hide();
             global::System.Console.WriteLine("PASS: " + _assertions + " native text dialog lifecycle checks (UWP event stubs, no device keyboard).");
         }
     }

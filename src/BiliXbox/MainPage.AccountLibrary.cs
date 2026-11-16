@@ -39,10 +39,10 @@ namespace BiliXbox
             AccountLibrary.OpenItemRequested += OpenLibraryItemAsync;
         }
 
-        private async Task ShowAccountLibraryAsync()
+        private async Task ShowAccountLibraryAsync(bool history = false, bool favorites = false)
         {
             if (_disposed || _dialogOpen || !_api.IsLoggedIn) return;
-            if (_libraryVisible) { AccountLibrary.RestoreFocus(); return; }
+            if (_libraryVisible) { if (history) AccountLibrary.OpenHistory(); else if (favorites) AccountLibrary.OpenFavorites(); else AccountLibrary.RestoreFocus(); return; }
             var historyFlush = FlushPlaybackHistoryAsync();
             bool returning = _videoReturnsToLibrary && _libraryReturn != null;
             if (returning) ReturnToAccountLibraryFromVideo(false);
@@ -69,6 +69,8 @@ namespace BiliXbox
                 AccountLibrary.IsEnabled = true;
                 if (returning) AccountLibrary.RestoreFocus();
                 else await AccountLibrary.ShowAsync(_api.CurrentUser);
+                if (!_disposed && _libraryVisible && ReferenceEquals(owner, _libraryReturn) && accountMid == CurrentAccountMid)
+                { if (history) AccountLibrary.OpenHistory(); else if (favorites) AccountLibrary.OpenFavorites(); }
             }
             catch (Exception ex)
             {
@@ -79,6 +81,26 @@ namespace BiliXbox
             {
                 if (!_disposed && ReferenceEquals(owner, _libraryReturn)) AccountLibrary.IsEnabled = true;
             }
+        }
+
+        private async void HomeHistory_Click(object sender, RoutedEventArgs args)
+        {
+            if (IgnorePlayerClick() || _disposed || _dialogOpen) return;
+            if (!_api.IsLoggedIn) await ShowLoginAsync();
+            if (!_api.IsLoggedIn || _disposed || _dialogOpen) return;
+            CaptureVisibleHomeFeedPosition();
+            _homeFeedFocusAnchor = HomeHistoryButton;
+            await ShowAccountLibraryAsync(true);
+        }
+
+        private async void HomeFavorites_Click(object sender, RoutedEventArgs args)
+        {
+            if (IgnorePlayerClick() || _disposed || _dialogOpen) return;
+            if (!_api.IsLoggedIn) await ShowLoginAsync();
+            if (!_api.IsLoggedIn || _disposed || _dialogOpen) return;
+            CaptureVisibleHomeFeedPosition();
+            _homeFeedFocusAnchor = HomeFavoritesButton;
+            await ShowAccountLibraryAsync(favorites: true);
         }
 
         private void ShowAccountLibrarySurface(bool restoreFocus = true)

@@ -1,0 +1,139 @@
+using System;
+using BiliXbox.Controls;
+using Windows.Gaming.Input;
+using Windows.System;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+namespace BiliXbox
+{
+    public sealed partial class MainPage
+    {
+        private bool _virtualLb, _rawLb, _lbChordUsed;
+        private readonly ShoulderChordState _viewingChord = new ShoulderChordState();
+        private DateTimeOffset _lastViewingChord = DateTimeOffset.MinValue;
+        private DateTimeOffset _lastRemoteSeek = DateTimeOffset.MinValue;
+        private bool _remoteControlsSelected;
+        private bool _replyShortcutBusy;
+        private DateTimeOffset _lastReplyShortcut = DateTimeOffset.MinValue;
+        private bool IsCommentReplySurface => _libraryVisible ? AccountLibrary.IsActivityDiscussionOpen
+            : _creatorVisible ? CreatorHub.IsDiscussionOpen
+            : _watching && _playerUi.Drawer == Controls.PlayerDrawer.Comments;
+        private async void RunTargetedCommentReply()
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_replyShortcutBusy || _disposed || _dialogOpen || _inputPaneVisible
+                || !IsCommentReplySurface || (now - _lastReplyShortcut).TotalMilliseconds < 450) return;
+            _lastReplyShortcut = now; _replyShortcutBusy = true;
+            try
+            {
+                if (_libraryVisible) await AccountLibrary.WriteActivityCommentAsync(true);
+                else if (_creatorVisible) await CreatorHub.WriteCommentAsync(true);
+                else TryOpenCommentComposer(true);
+            }
+            catch (Exception ex) { SetStatus("回复输入未能打开：" + Friendly(ex)); }
+            finally { _replyShortcutBusy = false; }
+        }
+        private int _filmCatalogType = 2;
+        private string _lastUiDisplayDiagnostic;
+        private void RecordUiDisplayDiagnostic()
+        {
+            try
+            {
+                var bounds = Window.Current.Bounds;
+                var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
+                double scale = display.RawPixelsPerViewPixel;
+                string value = "ui-display logicalView=" + bounds.Width.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+                    + "x" + bounds.Height.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+                    + " pixelScale=" + scale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                    + " viewPixelsEstimate=" + Math.Round(bounds.Width * scale) + "x" + Math.Round(bounds.Height * scale)
+                    + " layoutUnits=1280x720 native4kUiVerified=false";
+                if (value == _lastUiDisplayDiagnostic) return;
+                _lastUiDisplayDiagnostic = value;
+                BiliXbox.Services.PlaybackDiagnosticsLog.Record(value);
+            }
+            catch (Exception) { /* Optional display telemetry must not block startup. */ }
+        }
+        private async void FilmGenre_Click(object sender, RoutedEventArgs args)
+        {
+            if (IgnorePlayerClick() || _dialogOpen || _watching || _feedNavigation.IsSearch || _feedNavigation.Section != HomeSection.Film) return;
+            int[] types = { 2, 5, 3, 7 }; string[] labels = { "电影", "电视剧", "纪录片", "综艺" };
+            int index = (Array.IndexOf(types, _filmCatalogType) + 1) % types.Length;
+            _filmCatalogType = types[index]; FilmGenreButton.Content = "类型：" + labels[index];
+            _feedNavigation.SwitchSection(HomeSection.Film); InvalidateHomeFeedSection();
+            try { await LoadFeedAsync(); } catch (Exception ex) { SetStatus("影视加载失败：" + Friendly(ex)); }
+        }
+        private bool IsRemoteDirection(VirtualKey key) => key == VirtualKey.Left || key == VirtualKey.Right || key == VirtualKey.Up || key == VirtualKey.Down
+            || key == VirtualKey.NavigationLeft || key == VirtualKey.NavigationRight || key == VirtualKey.NavigationUp || key == VirtualKey.NavigationDown;
+        private bool TryRemoteSeek(VirtualKey key)
+        {
+            if (_pausedRecommendationsVisible) return false;
+            if (_adjustingVolume) return false;
+            if (!IsRemoteDirection(key) || !_watching || _creatorVisible || _libraryVisible || _liveVisible || _playerUi.Drawer != PlayerDrawer.None
+                || _dialogOpen || _inputPaneVisible || IsNativeGamepadEditorActive) return false;
+            bool horizontal = key == VirtualKey.Left || key == VirtualKey.Right || key == VirtualKey.NavigationLeft || key == VirtualKey.NavigationRight;
+            if (!horizontal) { _remoteControlsSelected = true; return false; }
+            // A controller may remain paired while an infrared remote is used. Only suppress a real physical direction currently held.
+            try { if (_activeGamepad != null) { var reading = _activeGamepad.GetCurrentReading();
+                if ((reading.Buttons & (GamepadButtons.DPadLeft | GamepadButtons.DPadRight)) != 0 || Math.Abs(reading.LeftThumbstickX) > .35) return false; } } catch (Exception) { }
+            if (_playerInput.Mode == PlayerInputMode.Playback) _remoteControlsSelected = false;
+            if (_remoteControlsSelected && _playerInput.Row != PlayerFocusRow.Seek) return false;
+            var now = DateTimeOffset.UtcNow;
+            if ((now - _lastRemoteSeek).TotalMilliseconds >= 200)
+            { _lastRemoteSeek = now; ShowControls(); Skip(key == VirtualKey.Left || key == VirtualKey.NavigationLeft ? -10 : 10); }
+            return true;
+        }
+        private bool HandleViewingChord(VirtualKey key, bool repeat)
+        {
+            if (_disposed || _dialogOpen || _inputPaneVisible || IsNativeGamepadEditorActive) return false;
+            if (key == VirtualKey.GamepadLeftShoulder)
+            {
+                if (!repeat) { _virtualLb = true; _lbChordUsed = false; }
+                return true;
+            }
+            bool lb = _virtualLb || _rawLb;
+            try { if (_activeGamepad != null) lb |= (_activeGamepad.GetCurrentReading().Buttons & GamepadButtons.LeftShoulder) != 0; } catch (Exception) { }
+            bool targetX = key == VirtualKey.GamepadX && IsCommentReplySurface;
+            bool refreshX = key == VirtualKey.GamepadX && IsSectionBrowseSurface;
+            if (!lb || (!refreshX && !targetX)) return false;
+            _lbChordUsed = true;
+            if (!repeat) { if (targetX) RunTargetedCommentReply(); else RunViewingChord(true); }
+            return true;
+        }
+        private void ReleaseViewingChord(VirtualKey key)
+        {
+            if (key != VirtualKey.GamepadLeftShoulder) return;
+            _virtualLb = false;
+            if (!RawGamepadOwnsNavigation && !_lbChordUsed && !_dialogOpen && !_inputPaneVisible)
+            { if (IsSectionBrowseSurface) StepHomeSection(-1); else SeekVideoShoulder(-1); }
+        }
+        private void PollViewingChord(GamepadReading reading, bool enabled)
+        {
+            bool lb = enabled && (reading.Buttons & GamepadButtons.LeftShoulder) != 0;
+            bool x = (IsSectionBrowseSurface || IsCommentReplySurface) && (reading.Buttons & GamepadButtons.X) != 0;
+            bool alreadyUsed = _lbChordUsed;
+            var action = _viewingChord.Sample(lb, x, enabled);
+            // A mapped X tap may occur entirely between raw polling frames.
+            // Keep its consumed-LB latch until release, including when a remote
+            // provides mapped keys while the raw device sampler is disabled.
+            _lbChordUsed = _viewingChord.Consumed || (alreadyUsed && (_virtualLb || _rawLb || lb));
+            if (action == ShoulderAction.Refresh) { if (IsCommentReplySurface) RunTargetedCommentReply(); else RunViewingChord(true); }
+            else if (action == ShoulderAction.Previous && !alreadyUsed) { if (IsSectionBrowseSurface) StepHomeSection(-1); else SeekVideoShoulder(-1); }
+            _rawLb = lb;
+            if (!lb && !_virtualLb) _lbChordUsed = false;
+        }
+        private async void RunViewingChord(bool refresh)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_disposed || _dialogOpen || _inputPaneVisible || (now - _lastViewingChord).TotalMilliseconds < 450) return;
+            _lastViewingChord = now;
+            try
+            {
+                if (refresh && IsSectionBrowseSurface) await RefreshFeedAsync();
+            }
+            catch (Exception ex) { SetStatus("快捷操作失败：" + Friendly(ex)); }
+        }
+        private void Watch_SizeChanged(object sender, SizeChangedEventArgs args) { ApplyCommentLayout(); RecordUiDisplayDiagnostic(); }
+        private void RefreshFeed_GotFocus(object sender, RoutedEventArgs args) => RefreshFeedFocus.BorderBrush = new Windows.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.White);
+        private void RefreshFeed_LostFocus(object sender, RoutedEventArgs args) => RefreshFeedFocus.BorderBrush = new Windows.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.Transparent);
+    }
+}

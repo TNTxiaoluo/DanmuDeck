@@ -201,4 +201,16 @@ try {
 }
 finally { $surface.Dispose() }
 
+$fontSizes = @()
+foreach ($sourceSize in @(18,25,36)) {
+    $surface = New-Surface
+    try {
+        $item = New-ItemData 0 'font choice'; $item.FontSize = $sourceSize
+        $surface.Load([BiliXbox.Models.DanmakuItem[]]@($item)); $surface.Update([TimeSpan]::Zero, $false)
+        Assert-True ($surface.Children.Count -eq 1) 'Font option lost the visible danmaku.'
+        $fontSizes += $surface.Children[0].FontSize
+    } finally { $surface.Dispose() }
+}
+Assert-True ($fontSizes[0] -lt $fontSizes[1] -and $fontSizes[1] -lt $fontSizes[2]) 'Small/default/large sources must render with their respective relative sizes.'
+Write-Host 'PASS: actual small/default/large source sizes reach the rendered text.'
 Write-Host 'All danmaku logic tests passed using UI stubs. This is not a UWP build or Xbox rendering test.'

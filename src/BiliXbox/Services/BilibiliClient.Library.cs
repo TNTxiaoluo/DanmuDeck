@@ -131,12 +131,20 @@ namespace BiliXbox.Services
 
         public async Task<AccountSeasonDetail> GetSeasonDetailAsync(long seasonId, long episodeId = 0,
             CancellationToken ct = default(CancellationToken))
+            => await ReadSeasonDetailAsync(seasonId, episodeId, false, ct);
+
+        public async Task<AccountSeasonDetail> GetPublicSeasonDetailAsync(long seasonId, long episodeId = 0,
+            CancellationToken ct = default(CancellationToken))
+            => await ReadSeasonDetailAsync(seasonId, episodeId, true, ct);
+
+        private async Task<AccountSeasonDetail> ReadSeasonDetailAsync(long seasonId, long episodeId, bool allowAnonymous, CancellationToken ct)
         {
             if (seasonId <= 0 && episodeId <= 0) throw new ArgumentOutOfRangeException(nameof(seasonId));
-            long owner = RequireLibraryAccount();
+            long owner = allowAnonymous ? IsLoggedIn ? CurrentUser?.Mid ?? 0 : 0 : RequireLibraryAccount();
             string query = episodeId > 0 ? "ep_id=" + Invariant(episodeId) : "season_id=" + Invariant(seasonId);
             var data = RequirePgcData(await GetJsonAsync(Api + "/pgc/view/web/season?" + query, ct));
-            EnsureLibraryAccount(owner, ct);
+            ct.ThrowIfCancellationRequested();
+            if (owner != (IsLoggedIn ? CurrentUser?.Mid ?? 0 : 0)) throw new OperationCanceledException("账户已变更");
             long returned = Number(data, "season_id");
             if (returned <= 0 || (seasonId > 0 && returned != seasonId)) throw LibraryFormatError("剧集");
             string title = PlainText(Str(data, "title"));

@@ -49,6 +49,8 @@ try {
 '@ | Set-Content -LiteralPath $associationPath -Encoding utf8
     $associated = & "$PSScriptRoot\Build-StoreUpload.ps1" -StoreAssociationPath $associationPath -PrepareOnly -OutputDirectory $scratch | Where-Object { $_ -isnot [string] } | Select-Object -Last 1
     [xml]$associatedManifest = Get-Content -LiteralPath (Join-Path $associated.SourceDirectory 'Package.appxmanifest') -Raw
+    [xml]$releaseManifest = Get-Content -LiteralPath $manifestPath -Raw
+    Assert-Check ([string]$associatedManifest.Package.Identity.Version -ceq [string]$releaseManifest.Package.Identity.Version) 'Omitted Store version must follow the current release manifest.'
     Assert-Check ([string]$associatedManifest.Package.Identity.Name -ceq 'Example.Tests.DanmuCabin') 'Associated name was not copied exactly.'
     Assert-Check ([string]$associatedManifest.Package.Identity.Publisher -ceq 'CN=00000000-0000-0000-0000-000000000001') 'Associated publisher was not copied exactly.'
     Assert-Check ([string]$associatedManifest.Package.Properties.PublisherDisplayName -ceq 'Example test publisher') 'Associated publisher display name was not copied exactly.'

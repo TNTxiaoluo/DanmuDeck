@@ -26,6 +26,9 @@ namespace BiliXbox.Services
         private bool _disposed;
         private long _completedDownloadBytes;
         private long _requestedCount, _completedCount, _failedCount;
+        private bool _downloadFailurePending;
+        private int _lastHttpStatus;
+        private int _lastDownloadError;
         private int _diagnosticEvents;
         internal const int MaximumDiagnosticEvents = 256;
         internal event Action<string> DownloadDiagnostic;
@@ -47,6 +50,18 @@ namespace BiliXbox.Services
         public bool HasAlternateRoutes { get { return _routes != null && _routes.HasAlternateRoutes; } }
         public int RouteChangeCount { get { return _routes == null ? 0 : _routes.RouteChangeCount; } }
         internal int NextRouteOffset { get { return _routes == null ? 0 : _routes.NextRouteOffset; } }
+        internal int FailureRouteOffset { get { return _routes == null ? 0 : _routes.FailureRouteOffset; } }
+        internal bool DownloadFailurePending { get { lock (_eventGate) return _downloadFailurePending; } }
+        internal string TransportDiagnostic
+        {
+            get
+            {
+                lock (_eventGate) return "requested=" + _requestedCount + " completed=" + _completedCount
+                    + " failed=" + _failedCount + " totalBytes=" + _completedDownloadBytes
+                    + " lastHttp=" + _lastHttpStatus + " lastDownloadHresult=0x" + _lastDownloadError.ToString("X8")
+                    + " unresolvedDownloadFailure=" + _downloadFailurePending;
+            }
+        }
 
         private AdaptivePlaybackSource(DownloadSpeedMeter downloadSpeed)
         {
@@ -144,6 +159,13 @@ namespace BiliXbox.Services
             {
                 if (_disposed) return;
                 ++_failedCount;
+                _downloadFailurePending = true;
+                try
+                {
+                    _lastHttpStatus = args.HttpResponseMessage == null ? 0 : (int)args.HttpResponseMessage.StatusCode;
+                    _lastDownloadError = args.ExtendedError?.HResult ?? 0;
+                }
+                catch (Exception) { }
                 _routes.ReportFailure(args.RequestId.ToString());
                 // DownloadFailed is a notification, not a retry API. Native
                 // retries use the new route; the UI can also rebuild boundedly.
@@ -169,6 +191,7 @@ namespace BiliXbox.Services
             {
                 if (_disposed) return;
                 ++_completedCount;
+                _downloadFailurePending = false;
                 _routes.CompleteRequest(args.RequestId.ToString());
                 // These native statistics are for telemetry only. Never use
                 // them to change quality or infer that decoding is keeping up.

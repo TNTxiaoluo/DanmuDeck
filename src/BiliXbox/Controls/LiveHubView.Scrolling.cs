@@ -29,6 +29,7 @@ namespace BiliXbox.Controls
         {
             if (_editing || Visibility != Visibility.Visible || double.IsNaN(verticalPixels) ||
                 double.IsInfinity(verticalPixels) || Math.Abs(verticalPixels) < .01) return false;
+            if (_categoryOpen) { NavigateLiveCategories(verticalPixels < 0 ? PlayerDirection.Up : PlayerDirection.Down); return true; }
             if (!IsPlayingRoom)
             {
                 var scroll = FindChild<ScrollViewer>(_rooms);

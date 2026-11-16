@@ -2,6 +2,7 @@
 // No XAML loader, HTTP, account files, physical controller or actual logout.
 namespace Windows.UI.Xaml
 {
+    public sealed class RoutedEventArgs : EventArgs { }
     public enum Visibility { Visible, Collapsed }
     public struct Thickness
     {
@@ -64,6 +65,10 @@ namespace BiliXbox.Controls
         { ++ShowCount; LastUser = user; return ShowHandler == null ? Task.CompletedTask : ShowHandler(); }
         public void StopRequests() { ++StopCount; }
         public void RestoreFocus() { ++FocusCount; }
+        public int HistoryCount;
+        public void OpenHistory() { ++HistoryCount; }
+        public int FavoritesCount;
+        public void OpenFavorites() { ++FavoritesCount; }
         public void ClearAccount() { ++ClearCount; CachedView = null; LastUser = null; }
         public void RaiseClose() { CloseRequested?.Invoke(this, EventArgs.Empty); }
         public void RaiseSignOut() { SignOutRequested?.Invoke(this, EventArgs.Empty); }
@@ -131,6 +136,12 @@ namespace BiliXbox
     using BiliXbox.Services;
     public sealed partial class MainPage
     {
+        private readonly FrameworkElement HomeHistoryButton = new FrameworkElement();
+        private readonly FrameworkElement HomeFavoritesButton = new FrameworkElement();
+        private FrameworkElement _homeFeedFocusAnchor;
+        private bool IgnorePlayerClick() => false;
+        private Task ShowLoginAsync() => Task.CompletedTask;
+        private void CaptureVisibleHomeFeedPosition() { }
         // Other MainPage partials and XAML are the dependencies of this unit.
         private readonly BilibiliClient _api = new BilibiliClient();
         private bool _disposed, _dialogOpen, _creatorVisible, _videoReturnsToCreator, _watching, _wantsPlayback, _resumeAfterOpen;
