@@ -46,13 +46,14 @@ namespace BiliXbox.Controls
         private readonly Grid _root, _overview, _browse;
         private readonly AvatarView _avatar;
         private readonly TextBlock _name, _subtitle, _sectionTitle, _notice, _empty, _pageLabel, _hint;
-        private readonly Button _back, _signOut, _history, _favorites, _follows, _anime, _drama, _refresh, _previous, _next;
+        private readonly Button _back, _settings, _signOut, _history, _favorites, _follows, _anime, _drama, _refresh, _previous, _next;
         private readonly StackPanel _tabs, _pager;
         private readonly GridView _videoGrid, _folderGrid;
         private readonly ProgressRing _progress;
 
         public event EventHandler CloseRequested;
         public event EventHandler SignOutRequested;
+        public event EventHandler SettingsRequested;
         public event Func<AccountLibraryItem, Task> OpenItemRequested;
 
         public AccountLibraryView()
@@ -71,6 +72,7 @@ namespace BiliXbox.Controls
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _back = MakeButton("返回", () => { if (!Back()) CloseRequested?.Invoke(this, EventArgs.Empty); }, "AccountBackButton");
             header.Children.Add(_back);
             _avatar = new AvatarView { Width = 56, Height = 56, VerticalAlignment = VerticalAlignment.Center };
@@ -80,7 +82,8 @@ namespace BiliXbox.Controls
             _subtitle = Text("你的内容，继续精彩", 14); _subtitle.Foreground = SecondaryBrush();
             identity.Children.Add(_name); identity.Children.Add(_subtitle); Add(header, identity, 0, 2);
             _signOut = MakeButton("退出登录", () => SignOutRequested?.Invoke(this, EventArgs.Empty), "AccountSignOutButton");
-            Add(header, _signOut, 0, 3); _root.Children.Add(header);
+            _settings = MakeButton("设置", () => SettingsRequested?.Invoke(this, EventArgs.Empty), "AccountSettingsButton");
+            Add(header, _settings, 0, 3); Add(header, _signOut, 0, 4); _root.Children.Add(header);
 
             _overview = new Grid { ColumnSpacing = 24, Padding = new Thickness(20, 38, 20, 24), VerticalAlignment = VerticalAlignment.Center };
             for (int i = 0; i < 5; ++i) _overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

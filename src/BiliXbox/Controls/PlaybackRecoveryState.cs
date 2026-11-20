@@ -8,6 +8,7 @@ namespace BiliXbox.Controls
     {
         public const int MaximumAttempts = 2;
         public static readonly TimeSpan MinimumWait = TimeSpan.FromSeconds(8);
+        public static readonly TimeSpan SlowRefillWait = TimeSpan.FromSeconds(12);
         public static readonly TimeSpan SwitchCooldown = TimeSpan.FromSeconds(20);
 
         private bool _hasSample;
@@ -15,6 +16,8 @@ namespace BiliXbox.Controls
         private DateTimeOffset _lastSampleAt;
         private DateTimeOffset? _waitingSince;
         private DateTimeOffset? _lastSwitchAt;
+        private bool _slowRefill;
+        private double _refillStartSeconds;
 
         public int Attempts { get; private set; }
 
@@ -40,7 +43,7 @@ namespace BiliXbox.Controls
         // This is a consuming decision, so call it once per playback sample.
         public bool ShouldSwitch(DateTimeOffset now, TimeSpan mediaPosition,
             bool wantsPlayback, bool waiting, bool seekingOrModal,
-            double bufferedSeconds, bool hasAlternates, bool receivingData = false)
+            double bufferedSeconds, bool hasAlternates, bool receivingData = false, bool belowRequiredRate = false)
         {
             bool clockMoved = _hasSample &&
                 Math.Abs((mediaPosition - _lastPosition).TotalSeconds) > 0.0001;
@@ -49,8 +52,10 @@ namespace BiliXbox.Controls
             _lastPosition = mediaPosition;
             _lastSampleAt = now;
 
-            bool starving = double.IsNaN(bufferedSeconds) || bufferedSeconds < 1;
-            if (!wantsPlayback || !waiting || seekingOrModal || !starving || !hasAlternates || receivingData)
+            bool starving = !receivingData && (double.IsNaN(bufferedSeconds) || bufferedSeconds < 1);
+            bool slowRefill = belowRequiredRate && (receivingData || (_waitingSince.HasValue && _slowRefill))
+                && bufferedSeconds >= 0 && bufferedSeconds < 3;
+            if (!wantsPlayback || !waiting || seekingOrModal || !hasAlternates || (!starving && !slowRefill))
             {
                 _waitingSince = null;
                 return false;
@@ -58,10 +63,18 @@ namespace BiliXbox.Controls
 
             // Any media movement, including a rewind whose seek event was not
             // observed, breaks continuity. Progress never replenishes attempts.
-            if (!_waitingSince.HasValue || clockMoved || wallClockRewound)
+            // Small increments can take tens of seconds to reach the resume
+            // buffer on a throttled route. Extend the wait only once there is
+            // meaningful contiguous progress, or the wait condition changes.
+            if (!_waitingSince.HasValue || clockMoved || wallClockRewound || slowRefill != _slowRefill
+                || (slowRefill && bufferedSeconds - _refillStartSeconds >= .75))
+            {
                 _waitingSince = now;
+                _slowRefill = slowRefill;
+                _refillStartSeconds = bufferedSeconds;
+            }
 
-            if (Attempts >= MaximumAttempts || now - _waitingSince.Value < MinimumWait ||
+            if (Attempts >= MaximumAttempts || now - _waitingSince.Value < (slowRefill ? SlowRefillWait : MinimumWait) ||
                 (_lastSwitchAt.HasValue && now - _lastSwitchAt.Value < SwitchCooldown))
                 return false;
 

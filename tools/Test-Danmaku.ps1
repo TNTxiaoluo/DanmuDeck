@@ -202,6 +202,35 @@ try {
 finally { $surface.Dispose() }
 
 $fontSizes = @()
+$normalSpeed = New-Surface
+$temporarySpeed = New-Surface
+try {
+    $fixture = [BiliXbox.Models.DanmakuItem[]]@((New-ItemData 0 'scrolling'), (New-ItemData 0 'fixed' 5), (New-ItemData 20 'seek destination'))
+    $normalSpeed.Load($fixture)
+    $temporarySpeed.Load($fixture)
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    $normalSpeed.Update([TimeSpan]::Zero, $true, 1)
+    $temporarySpeed.Update([TimeSpan]::Zero, $true, 2)
+    $scrolling = $temporarySpeed.Children | Where-Object Text -eq 'scrolling'
+    $fixed = $temporarySpeed.Children | Where-Object Text -eq 'fixed'
+    Start-Sleep -Milliseconds 600
+    [Windows.UI.Xaml.Media.CompositionTarget]::Pulse()
+    $normalDistance = 1280 - ($normalSpeed.Children | Where-Object Text -eq 'scrolling').Left
+    $fastDistance = 1280 - $scrolling.Left
+    Assert-True ($normalDistance -gt 0 -and [Math]::Abs($fastDistance / $normalDistance - 2) -lt 0.05) '2x playback did not double scrolling motion.'
+    $position = [TimeSpan]::FromSeconds($elapsed.Elapsed.TotalSeconds * 2)
+    $temporarySpeed.Update($position, $true, 2)
+    Assert-True ($temporarySpeed.Children.Contains($scrolling) -and $temporarySpeed.Children.Contains($fixed)) 'A delayed sample at 2x falsely reset active comments.'
+    $temporarySpeed.Update($position, $true, 1.25)
+    Assert-True ($temporarySpeed.Children.Contains($scrolling) -and $temporarySpeed.Children.Contains($fixed)) 'Releasing RT discarded on-screen comments.'
+    $temporarySpeed.Update([TimeSpan]::FromSeconds(20), $true, 1.25)
+    Assert-True ($temporarySpeed.Children.Count -eq 1 -and $temporarySpeed.Children[0].Text -eq 'seek destination') 'A real seek at variable speed did not move to the destination.'
+    Write-Host 'PASS: 2x motion, delayed samples at 2x, restoring a selected rate, and genuine seeks.'
+} finally {
+    $temporarySpeed.Dispose()
+    $normalSpeed.Dispose()
+}
+
 foreach ($sourceSize in @(18,25,36)) {
     $surface = New-Surface
     try {

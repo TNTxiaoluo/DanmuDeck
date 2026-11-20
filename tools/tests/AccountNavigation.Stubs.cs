@@ -59,6 +59,7 @@ namespace BiliXbox.Controls
         public Func<Task> ShowHandler;
         public event EventHandler CloseRequested;
         public event EventHandler SignOutRequested;
+        public event EventHandler SettingsRequested;
         public event Func<AccountLibraryItem, Task> OpenItemRequested;
         public void Initialize(BilibiliClient api) { ++InitializeCount; }
         public Task ShowAsync(UserProfile user)
@@ -69,9 +70,12 @@ namespace BiliXbox.Controls
         public void OpenHistory() { ++HistoryCount; }
         public int FavoritesCount;
         public void OpenFavorites() { ++FavoritesCount; }
+        public int ActivityCount;
+        public void OpenActivity() { ++ActivityCount; }
         public void ClearAccount() { ++ClearCount; CachedView = null; LastUser = null; }
         public void RaiseClose() { CloseRequested?.Invoke(this, EventArgs.Empty); }
         public void RaiseSignOut() { SignOutRequested?.Invoke(this, EventArgs.Empty); }
+        public void RaiseSettings() { SettingsRequested?.Invoke(this, EventArgs.Empty); }
         public Task RaiseOpen(AccountLibraryItem item) => OpenItemRequested == null ? Task.CompletedTask : OpenItemRequested(item);
     }
     public sealed class CreatorDependency : Windows.UI.Xaml.FrameworkElement
@@ -83,6 +87,7 @@ namespace BiliXbox.Controls
 namespace BiliXbox.Services
 {
     using BiliXbox.Models;
+    internal static class PlaybackDiagnosticsLog { internal static void Record(string value) { } }
     public sealed class BilibiliClient
     {
         public UserProfile CurrentUser { get; set; } = new UserProfile { Mid = 42, Name = "fixture account" };
@@ -91,6 +96,7 @@ namespace BiliXbox.Services
         public long LastEpisodeId;
         public int LastQuality;
         public VideoDetail LastVideo;
+        public Func<int, PlaybackInfo> PlaybackResponse;
         public CancellationToken LastToken;
         public Exception LogoutFailure;
         public Task LogoutAsync()
@@ -108,7 +114,7 @@ namespace BiliXbox.Services
         public Task<PlaybackInfo> GetPlaybackAsync(VideoDetail video, int quality, CancellationToken token, PlaybackAudioMode audioMode = PlaybackAudioMode.Standard)
         {
             ++UgcCount; LastVideo = video; LastQuality = quality; LastToken = token;
-            return Task.FromResult(new PlaybackInfo { QualityId = quality });
+            return Task.FromResult(PlaybackResponse?.Invoke(quality) ?? new PlaybackInfo { QualityId = quality });
         }
     }
 }
@@ -138,9 +144,11 @@ namespace BiliXbox
     {
         private readonly FrameworkElement HomeHistoryButton = new FrameworkElement();
         private readonly FrameworkElement HomeFavoritesButton = new FrameworkElement();
+        private readonly FrameworkElement HomeActivityButton = new FrameworkElement();
         private FrameworkElement _homeFeedFocusAnchor;
         private bool IgnorePlayerClick() => false;
         private Task ShowLoginAsync() => Task.CompletedTask;
+        private Task ShowNetworkSettingsAsync() => Task.CompletedTask;
         private void CaptureVisibleHomeFeedPosition() { }
         // Other MainPage partials and XAML are the dependencies of this unit.
         private readonly BilibiliClient _api = new BilibiliClient();
@@ -167,6 +175,7 @@ namespace BiliXbox
             public TimeSpan Position;
             public bool Playing;
             public AccountLibraryItem Episode;
+            public IReadOnlyList<CollectionEpisode> CollectionEpisodes;
         }
         public readonly System.Collections.Generic.List<RecordedNavigation> Navigations = new System.Collections.Generic.List<RecordedNavigation>();
         public int GoHomeCount, CreatorSurfaceCount, CreatorClearCount, AccountUpdateCount, HomeRefreshCount,

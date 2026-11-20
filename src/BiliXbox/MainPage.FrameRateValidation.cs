@@ -97,7 +97,8 @@ namespace BiliXbox
                 nativeDetail = " native-properties-hresult=0x" + error.HResult.ToString("X8");
             }
             if (!OwnsNativeFrameRateValidation(item, source, playback, generation, watch)) return false;
-            if (nativeWidth == 0 || nativeHeight == 0)
+            bool encodedDimensionsKnown = nativeWidth > 0 && nativeHeight > 0;
+            if (!encodedDimensionsKnown)
             {
                 nativeWidth = _media.PlaybackSession.NaturalVideoWidth;
                 nativeHeight = _media.PlaybackSession.NaturalVideoHeight;
@@ -109,7 +110,10 @@ namespace BiliXbox
             bool dimensionsKnown = nativeWidth > 0 && nativeHeight > 0;
             bool nativeFourK = dimensionsKnown && (Math.Max(nativeWidth, nativeHeight) >= 3840
                 || Math.Min(nativeWidth, nativeHeight) >= 2160);
-            bool wrongDimensions = expectsFourK && dimensionsKnown && !nativeFourK;
+            // The session size at MediaOpened can still be a placeholder
+            // (1920x1080 was observed on a byte-verified 852x480 stream).
+            // Only the selected track's encoding properties can reject it here.
+            bool wrongDimensions = expectsFourK && encodedDimensionsKnown && !nativeFourK;
             playback.VideoFrameRateNative = nativeRate;
             playback.NativeFrameRateVerified = nativeRate > 0 && nativeRate <= 60.001
                 && (!expectsFourK || nativeFourK);
@@ -134,7 +138,7 @@ namespace BiliXbox
             {
                 string trialName = playback.VideoFrameRate > PlaybackFrameRatePolicy.NearSixtyMetadataMaximum
                     ? "高帧率兼容性试播" : "兼容性试播";
-                playback.FrameRateNotice = expectsFourK && !dimensionsKnown
+                playback.FrameRateNotice = expectsFourK && !nativeFourK
                     ? "原生视频尺寸尚未确认；正在按已查询的 60fps 解码能力和 60Hz 输出进行" + trialName + "，尚未完成原生 4K 校验。"
                     : nativeRate == 0
                     ? "原生帧率尚未确认；正在按已查询的 60fps 解码能力和 60Hz 输出进行" + trialName + "。"

@@ -10,7 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($DisplayVersion -and $DisplayVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+b?$') {
+if ($DisplayVersion -and $DisplayVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?b?$') {
     throw 'DisplayVersion must be a release display version such as 1.0.2b; the Appx identity remains numeric.'
 }
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\', '/')

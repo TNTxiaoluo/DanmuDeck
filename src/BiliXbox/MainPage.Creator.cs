@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using BiliXbox.Controls;
 using BiliXbox.Models;
@@ -18,6 +19,7 @@ namespace BiliXbox
             public string Bvid, Title;
             public long Cid;
             public int Quality;
+            public IReadOnlyList<CollectionEpisode> CollectionEpisodes;
             public TimeSpan Position;
             public bool Playing;
             public AccountLibraryItem Episode;

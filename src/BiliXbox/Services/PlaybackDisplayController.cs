@@ -40,6 +40,7 @@ namespace BiliXbox.Services
             int resetVersion = Volatile.Read(ref _resetVersion);
             await _gate.WaitAsync(ct);
             string stage = "检查 HDMI 输出能力";
+            bool scaledSdrAllowed = false;
             try
             {
                 ct.ThrowIfCancellationRequested();
@@ -52,9 +53,10 @@ namespace BiliXbox.Services
                 bool hdr = playback.IsHdr10 && !playback.UsesSdrToneMapping;
                 int width = Math.Max(playback.VideoWidth, playback.VideoHeight);
                 int height = Math.Min(playback.VideoWidth, playback.VideoHeight);
+                scaledSdrAllowed = !hdr && playback.QualityId == 120 && playback.AllowsScaledSdrOutput;
                 if (playback.UsesSdrToneMapping && (!playback.IsHdr10 || playback.QualityId != 120
                     || (playback.SourceQualityId != 120 && playback.SourceQualityId != 125)
-                    || playback.VideoBitsPerChannel != 10 || !playback.FourKDisplayVerified
+                    || playback.VideoBitsPerChannel != 10 || (!playback.FourKDisplayVerified && !scaledSdrAllowed)
                     || width > 4096 || height > 2160 || (width < 3840 && height < 2160)))
                 {
                     FailureReason = "此 HDR10→SDR 播放源未保留有效的原始 4K/10bit 信息或独立 SDR 能力证明";
@@ -70,6 +72,8 @@ namespace BiliXbox.Services
                     return !_ownsMode && resetVersion == Volatile.Read(ref _resetVersion);
                 }
                 bool requires4K = width >= 3000 || height >= 2160 || playback.QualityId == 120;
+                if (scaledSdrAllowed && !playback.FourKDisplayVerified)
+                    return await UseDefaultSdrAsync(ct, resetVersion);
                 if ((hdr && !playback.Hdr10DisplayVerified)
                     || (requires4K && !playback.FourKDisplayVerified)
                     || width <= 0 || height <= 0)
@@ -83,10 +87,17 @@ namespace BiliXbox.Services
                     playback.RequiresNativeFrameRateValidation, out outputRate))
                 { FailureReason = "此视频帧率尚未通过所需的原生验证，不能仅依据接口帧率启用输出"; await ResetCoreAsync(); return false; }
                 if (!ApiInformation.IsTypePresent("Windows.Graphics.Display.Core.HdmiDisplayInformation"))
-                { FailureReason = "系统未提供 HDMI 显示模式接口"; await ResetCoreAsync(); return false; }
+                {
+                    if (scaledSdrAllowed) return await UseDefaultSdrAsync(ct, resetVersion);
+                    FailureReason = "系统未提供 HDMI 显示模式接口"; await ResetCoreAsync(); return false;
+                }
                 stage = "取得当前视图的 HDMI 接口";
                 if (_display == null) _display = HdmiDisplayInformation.GetForCurrentView();
-                if (_display == null) { FailureReason = "暂时无法读取 Xbox 当前视图的 HDMI 显示能力"; return false; }
+                if (_display == null)
+                {
+                    if (scaledSdrAllowed) return await UseDefaultSdrAsync(ct, resetVersion);
+                    FailureReason = "暂时无法读取 Xbox 当前视图的 HDMI 显示能力"; return false;
+                }
                 // Enumerate again for each preparation: HDMI settings and the
                 // connected display may have changed since the previous video.
                 stage = "枚举 HDMI 输出模式";
@@ -108,6 +119,7 @@ namespace BiliXbox.Services
                 }
                 if (candidates.Count == 0)
                 {
+                    if (scaledSdrAllowed) return await UseDefaultSdrAsync(ct, resetVersion);
                     FailureReason = "设备能力查询通过，但 Xbox 当前未提供匹配的 " + (hdr ? "HDR10" : requires4K ? "4K SDR" : "高清")
                         + " 输出模式" + (failures.Count > 0 ? "；" + failures[0]
                             : requires4K ? "；请检查电视和显示选项 → 视频模式中的「允许 4K」" : "");
@@ -174,6 +186,7 @@ namespace BiliXbox.Services
                 }
                 FailureReason = resetVersion != Volatile.Read(ref _resetVersion) ? "输出模式请求已失效，请重新播放"
                     : string.Join("；", failures.Distinct().Take(4));
+                if (scaledSdrAllowed) return await UseDefaultSdrAsync(ct, resetVersion);
                 await ResetCoreAsync();
                 return false;
             }
@@ -187,10 +200,21 @@ namespace BiliXbox.Services
             catch (Exception ex)
             {
                 FailureReason = Error(stage, ex);
+                if (scaledSdrAllowed && !ct.IsCancellationRequested) return await UseDefaultSdrAsync(ct, resetVersion);
                 await ResetCoreAsync();
                 return false;
             }
             finally { _gate.Release(); }
+        }
+
+        private async Task<bool> UseDefaultSdrAsync(CancellationToken ct, int resetVersion)
+        {
+            await ResetCoreAsync();
+            ct.ThrowIfCancellationRequested();
+            if (_ownsMode || resetVersion != Volatile.Read(ref _resetVersion)) return false;
+            FailureReason = "";
+            Diagnostic = "action=default-sdr-downscale";
+            return true;
         }
 
         private bool CanReuse(OutputCandidate candidate, HdmiDisplayMode current, bool hdr)

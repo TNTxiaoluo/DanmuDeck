@@ -92,6 +92,26 @@ namespace BiliXbox.LiveApiTests
                 Check(page.Page == 2 && page.HasMore && page.Items.Count == 1 && page.Items[0].Id == 12345678901L && page.Items[0].Title == "测试 & 直播", "live page and 64-bit room ID map exactly");
                 Check(Transport.Requests[0].Uri.Query.Contains("page=2") && Posts == 0, "real pagination query read-only");
             }
+            Stub(request => request.RequestUri.AbsolutePath.EndsWith("/GetWebList", StringComparison.Ordinal)
+                ? Ok(new JObject { ["rooms"] = new JArray(
+                    new JObject { ["room_id"] = 22, ["uid"] = 5, ["live_status"] = 1 },
+                    new JObject { ["room_id"] = 12, ["uid"] = 4, ["live_status"] = 1 },
+                    new JObject { ["room_id"] = 30, ["uid"] = 6, ["live_status"] = 0 }) })
+                : Ok(new JObject { ["count"] = 40, ["list"] = new JArray(
+                    new JObject { ["roomid"] = 11 }, new JObject { ["roomid"] = 12, ["online"] = 125 }) }));
+            using (var client = new BilibiliClient())
+            {
+                await Login(client);
+                var page = await client.GetLiveRoomsAsync(1);
+                Check(page.Items.Select(room => room.Id).SequenceEqual(new long[] { 22, 12, 11 })
+                    && page.Items.Take(2).All(room => room.IsFollowed) && page.Items[1].Online == 125 && page.HasMore,
+                    "on-air followings lead recommendations, with duplicate and offline rooms removed");
+                int followedRequests = Transport.Requests.Count(request => request.Uri.AbsolutePath.EndsWith("/GetWebList"));
+                await client.GetLiveRoomsAsync(1, 2, 0);
+                await client.GetLiveRoomsAsync(2);
+                Check(Transport.Requests.Count(request => request.Uri.AbsolutePath.EndsWith("/GetWebList")) == followedRequests,
+                    "category filtering and next-page recommendations stay independent of following injection");
+            }
             Stub(request => Ok(new JArray(
                 new JObject { ["id"] = 2, ["name"] = "网游", ["list"] = new JArray(
                     new JObject { ["id"] = "86", ["parent_id"] = "2", ["name"] = "英雄联盟" },

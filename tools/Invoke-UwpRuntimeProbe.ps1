@@ -218,3 +218,6 @@ namespace BiliXboxRuntimeProbe {
     Write-Host ('Temporary registration removed: ' + $report.RemovedRegistration)
     foreach ($entry in $report.Events) { Write-Host ("{0} event {1}: {2}" -f $entry.TimeCreated, $entry.Id, $entry.Message) }
 }
+if (-not $report.StartupCompleted) {
+    throw "UWP did not complete homepage startup. See $reportPath"
+}

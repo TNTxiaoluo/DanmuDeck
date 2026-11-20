@@ -20,16 +20,21 @@ namespace BiliXbox.DashRoutesTests
             var policy = new Services.DashRoutePolicy(xml, v, a, 0);
             Check(policy.HasAlternateRoutes && policy.ResolveRequest(new Uri(video), "v0").AbsoluteUri == video, "default keeps primary");
             Check(policy.ResolveRequest(new Uri(audio), "a0").AbsoluteUri == audio, "audio uses own primary");
+            Check(policy.SelectedRouteOffset == 0, "native recovery starts from the selected primary");
             policy.ResolveRequest(new Uri(video), "concurrent-old");
             Check(policy.ReportFailure("v0"), "failed video rotates once");
             Check(policy.FailureRouteOffset == 1, "terminal network rebuild keeps the replacement already chosen by DownloadFailed");
+            Check(policy.SelectedRouteOffset == 1, "nonterminal acceleration recovery retains the selected backup without advancing");
             Check(policy.NextRouteOffset == 2, "rebuild advances from native-selected route rather than stale UI offset");
+            Check(policy.HasUntriedRoute, "slow refill can advance from the first backup to the second");
             Check(!policy.ReportFailure("concurrent-old") && policy.RouteChangeCount == 1, "stale concurrent failure cannot skip next source");
             Check(policy.ResolveRequest(new Uri(video), "v1").AbsoluteUri == v1, "whole signed video backup preserved");
             Check(policy.ResolveRequest(new Uri(audio), "a-ok").AbsoluteUri == audio, "video failure leaves audio untouched");
             policy.CompleteRequest("a-ok");
             Check(!policy.ReportFailure("a-ok"), "successful request removed");
             Check(policy.ReportFailure("v1") && policy.ResolveRequest(new Uri(video), "v2").AbsoluteUri == v2, "second video backup");
+            Check(policy.SelectedRouteOffset == 2, "current route follows the actual second backup");
+            Check(!policy.HasUntriedRoute, "slow refill does not wrap from the last video route to the original");
             Check(!policy.ReportFailure("v2") && policy.RouteChangeCount == 2, "all failures exhaust finite candidates");
             Check(!policy.ReportFailure("v2") && !policy.ReportFailure("missing"), "duplicate and unknown failure are inert");
             Check(policy.ReportFailure("a0") && policy.FailureRouteOffset == 1,
@@ -38,6 +43,7 @@ namespace BiliXbox.DashRoutesTests
             Check(policy.ResolveRequest(unknown, "unknown") == unknown && !policy.ReportFailure("unknown"), "unrelated resource never rewritten");
             var manual = new Services.DashRoutePolicy(xml, v, a, 1);
             Check(manual.ResolveRequest(new Uri(video), "mv").AbsoluteUri == v1 && manual.ResolveRequest(new Uri(audio), "ma").AbsoluteUri == a1, "explicit source rotation selects both tracks independently");
+            Check(manual.SelectedRouteOffset == 1, "native recovery retains a manually selected starting offset");
             Check(manual.ReportFailure("mv") && manual.ResolveRequest(new Uri(video), "mv2").AbsoluteUri == v2, "manual alternate failure moves forward");
             Check(!manual.ReportFailure("mv2"), "manual rotation does not return to earlier failed primary");
             Check(!manual.RouteSummary.Contains("token") && !manual.RouteSummary.Contains("m4s") && manual.RouteSummary.Contains("v2.example.test"), "diagnostics contain host only");
@@ -47,6 +53,9 @@ namespace BiliXbox.DashRoutesTests
             Check(!single.HasAlternateRoutes && !single.ReportFailure("none"), "single-source remains usable without invented fallback");
             var empty = new Services.DashRoutePolicy(xml, null, null, 0);
             Check(!empty.HasAlternateRoutes && empty.ResolveRequest(new Uri(video), "legacy").AbsoluteUri == video, "legacy overload stays unchanged");
+            Check(empty.SelectedRouteOffset == 0, "missing route metadata has a zero native recovery offset");
+            var audioOnlyBackup = new Services.DashRoutePolicy(xml, new[] { video }, a, 1);
+            Check(audioOnlyBackup.SelectedRouteOffset == 1, "audio backup is retained when video has no alternate");
             for (int offset = 0; offset < 15; ++offset)
             {
                 var rotated = new Services.DashRoutePolicy(xml, v, a, offset);

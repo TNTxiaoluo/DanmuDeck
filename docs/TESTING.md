@@ -1,5 +1,9 @@
 # 测试
 
+涉及 App.xaml、运行时 XAML、自定义控件和 .NET Native 的包，需对最终签名 APPX 执行 `tools/Invoke-UwpRuntimeProbe.ps1 -PackagePath <包路径>`，确认本次激活的 `StartupCompleted=true`、无新启动错误且临时注册已清理。脚本仅在已启用开发模式的 Windows 上运行，拒绝替换已有安装，不修改证书信任或开发模式。加 `-UiProbeScriptPath tools/Probe-CreatorUi.ps1 -LiveOnly` 可验证直播入口、聊天与返回导航；该流程不等于验证媒体解码或 Xbox HDMI。启动错误页会使探针退出失败。
+
+`Test-PlaybackTransportIntegration.ps1` 覆盖正文失败但没有终结性 MediaFailed 的低缓存恢复，包含约 21 秒处补缓冲停在 1.7 秒的日志场景，以及缓存充足、暂停、定位、弹窗、取消、显示挂起与未知缓存的保护。`Test-DashRoutes.ps1` 同时核对恢复保留原生已选中的备用线路。两者使用生产逻辑与内存 I/O 替身，不测真实海外带宽。
+
 动态、倍速及弹幕样式回归新增 `Test-ActivityAuthorNavigation`、`Test-PlaybackSpeed`、`Test-DanmakuPost`，分别执行真实生产代码的入口焦点/会话内排序、RT 与固定速率、会员/精确发送参数检查。弹幕发送仅使用内存 HTTP 替身，不发送真实评论。`Test-NativeTextInput` 同时检查样式下拉框与 B/系统返回的竞争，`Test-Danmaku` 检查三种源字号的显示。
 
 直播分类新增 `tools/Test-LiveCategories.ps1`，检查实际分类控件的选择、取消、分页、焦点及旧请求隔离；`tools/Test-LiveApi.ps1` 覆盖一级/二级分区解析和筛选参数，附加 `-PublicReadOnly` 可用匿名 GET 核对当前平台接口。首页收藏入口沿用 `Test-AccountNavigation.ps1` 的账号与返回路径检查。

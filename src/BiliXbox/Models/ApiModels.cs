@@ -32,6 +32,12 @@ namespace BiliXbox.Models
         public long? ReplyCount { get; set; }
         public string Description { get; set; } = "";
         public IReadOnlyList<VideoPart> Parts { get; set; } = Array.Empty<VideoPart>();
+        public IReadOnlyList<CollectionEpisode> CollectionEpisodes { get; set; } = Array.Empty<CollectionEpisode>();
+    }
+
+    public sealed class CollectionEpisode : VideoItem
+    {
+        public long Cid { get; set; }
     }
 
     public sealed class VideoPart
@@ -102,6 +108,7 @@ namespace BiliXbox.Models
         public string FrameRateNotice { get; set; } = "";
         public bool HardwareHevcVerified { get; set; }
         public bool FourKDisplayVerified { get; set; }
+        public bool AllowsScaledSdrOutput { get; set; }
         public string CapabilityDiagnostic { get; set; } = "";
         public string PlaybackDiagnostic { get; set; } = "";
         public PlaybackQualityFailure QualityFailure { get; set; }
@@ -124,8 +131,7 @@ namespace BiliXbox.Models
         public bool RequiresLogin { get; set; }
         public bool RequiresPremium { get; set; }
         public bool IsAvailable { get; set; } = true;
-        // Capability-filtered options remain in the model for diagnostics, but
-        // the UI must omit them from the public quality list.
+        // Explicit 4K and HDR tiers can stay visible when disabled by capabilities.
         public bool IsVisible { get; set; } = true;
         public bool IsCapabilityPending { get; set; }
         public bool RequiresCompatibilityTrial { get; set; }
@@ -226,6 +232,7 @@ namespace BiliXbox.Models
 
     public sealed class DanmakuItem
     {
+        public IReadOnlyList<CommentContentPart> ContentParts { get; set; } = Array.Empty<CommentContentPart>();
         public double Time { get; set; }
         public string SenderHash { get; set; } = "";
         public string Text { get; set; } = "";

@@ -16,6 +16,7 @@ $taskFiles = @(
     'src\BiliXbox\Services\ProtectedCookieStore.cs'
     'src\BiliXbox\Services\BilibiliClient.cs'
     'src\BiliXbox\Services\BilibiliClient.Live.cs'
+    'src\BiliXbox\Services\LiveEmoteMetadata.cs'
     'src\BiliXbox\Services\BilibiliClient.Interactions.cs'
     'src\BiliXbox\Services\BilibiliClient.CommentReplies.cs'
     'src\BiliXbox\Services\BilibiliClient.Recommendations.cs'

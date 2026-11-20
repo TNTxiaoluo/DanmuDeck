@@ -32,7 +32,7 @@ namespace Windows.UI.Xaml.Input { public static class FocusManager { public stat
 namespace BiliXbox.Models
 {
     public sealed class LiveArea { public long Id,ParentId;public string Name;public IReadOnlyList<LiveArea> Children=Array.Empty<LiveArea>(); }
-    public sealed class LiveRoom { public long Id; }
+    public sealed class LiveRoom { public long Id; public bool IsFollowed { get; set; } }
     public sealed class LiveRoomPage { public int Page;public bool HasMore;public IReadOnlyList<LiveRoom> Items=Array.Empty<LiveRoom>(); }
 }
 namespace BiliXbox.Controls

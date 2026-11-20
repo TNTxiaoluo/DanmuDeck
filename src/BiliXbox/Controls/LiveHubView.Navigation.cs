@@ -23,7 +23,7 @@ namespace BiliXbox.Controls
                 if (_pane == Pane.GiftAmount || _pane == Pane.GiftConfirm)
                 { _quote = null; OpenPane(Pane.Gifts); FocusFirstRow(); return true; }
                 var prior = _pane; _pane = Pane.None; ++_paneGeneration; _drawer.Visibility = Visibility.Collapsed; WakeChrome();
-                Focus(prior == Pane.Chat ? _chatButton : prior == Pane.Quality ? _qualityButton : _giftButton); return true;
+                Focus(prior == Pane.Chat ? _chatButton : prior == Pane.Quality ? _qualityButton : prior == Pane.DanmakuSettings ? _danmakuSettingsButton : _giftButton); return true;
             }
             if (_chrome.Visibility == Visibility.Visible) { _chrome.Visibility = Visibility.Collapsed; return true; }
             LeaveRoom(); return true;
@@ -46,6 +46,7 @@ namespace BiliXbox.Controls
         {
             if (_editing) return true;
             if (_categoryOpen) { NavigateLiveCategories(direction); return true; }
+            if (TryRestoreLiveControls()) return true;
             ReconcileScrollFocus();
             var current = FocusManager.GetFocusedElement() as Control;
             if (!OwnsFocus) return false;
@@ -54,7 +55,7 @@ namespace BiliXbox.Controls
                 if (_chrome.Visibility != Visibility.Visible && _pane == Pane.None) { WakeChrome(); Focus(_play); return true; }
                 WakeChrome();
                 if (_pane != Pane.None) { NavigateDrawer(current, direction); return true; }
-                var buttons = new List<Control> { _play, _danmakuButton, _chatButton, _giftButton, _qualityButton };
+                var buttons = new List<Control> { _play, _danmakuButton, _danmakuSettingsButton, _chatButton, _giftButton, _qualityButton };
                 int index = buttons.IndexOf(current);
                 if (ReferenceEquals(current, _leave)) { Focus(direction == PlayerDirection.Down ? _play : _leave); return true; }
                 if (direction == PlayerDirection.Up) { Focus(_leave); return true; }
@@ -127,7 +128,11 @@ namespace BiliXbox.Controls
         }
         public void Confirm(bool repeat)
         {
-            if (repeat || _editing || !OwnsFocus) return;
+            if (repeat || _editing) return;
+            // Collapsing the chrome can move native focus outside this view.
+            // The first A restores controls only; never activate a stale button.
+            if (TryRestoreLiveControls()) return;
+            if (!OwnsFocus) return;
             ReconcileScrollFocus();
             WakeChrome(); var current = FocusManager.GetFocusedElement() as Control;
             int index = RoomIndex(current);
@@ -135,6 +140,11 @@ namespace BiliXbox.Controls
             if (ReferenceEquals(current, _roomInput)) { Run(() => EditAsync(true)); return; }
             if (ReferenceEquals(current, _chatInput)) { Run(() => EditAsync(false)); return; }
             if (current is Button button && button.IsEnabled && _actions.TryGetValue(button, out var action)) action();
+        }
+        private bool TryRestoreLiveControls()
+        {
+            if (!IsPlayingRoom || (_chrome.Visibility == Visibility.Visible && OwnsFocus)) return false;
+            RestoreFocus(); return true;
         }
         private void Focus(Control control)
         {

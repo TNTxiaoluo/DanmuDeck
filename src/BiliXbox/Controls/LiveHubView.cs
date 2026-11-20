@@ -21,11 +21,11 @@ namespace BiliXbox.Controls
     // only its room, so leaving live cannot leak playback or chat callbacks.
     public sealed partial class LiveHubView : UserControl
     {
-        private enum Pane { None, Chat, Gifts, GiftAmount, GiftConfirm, Quality }
+        private enum Pane { None, Chat, Gifts, GiftAmount, GiftConfirm, Quality, DanmakuSettings }
         private readonly Grid _root, _browse, _watch, _chrome, _drawer;
         private readonly GridView _rooms;
         private readonly TextBlock _notice, _pageText, _roomTitle, _roomMeta, _watchNotice, _drawerTitle, _drawerNotice;
-        private readonly Button _open, _category, _refresh, _previous, _next, _leave, _play, _danmakuButton, _chatButton, _giftButton, _qualityButton, _closeDrawer, _send, _reconnectChat;
+        private readonly Button _open, _category, _refresh, _previous, _next, _leave, _play, _danmakuButton, _danmakuSettingsButton, _chatButton, _giftButton, _qualityButton, _closeDrawer, _send, _reconnectChat;
         private readonly StackPanel _drawerBody, _chatComposer;
         private readonly ScrollViewer _drawerScroll;
         private readonly ListView _messages;
@@ -110,6 +110,7 @@ namespace BiliXbox.Controls
             AutomationProperties.SetAutomationId(_surface, "LivePlayer");
             _watch.Children.Add(_surface);
             _overlay = new DanmakuOverlay(); _watch.Children.Add(_overlay);
+            _overlay.RichContentFactory = LiveRichContent.Overlay;
             _chrome = new Grid { Padding = new Thickness(44, 28, 44, 24), RowSpacing = 12 };
             _chrome.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _chrome.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -130,10 +131,11 @@ namespace BiliXbox.Controls
             var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _play = MakeButton("暂停", TogglePlayback, "LivePlayButton");
             _danmakuButton = MakeButton("弹幕 开", ToggleDanmaku, "LiveDanmakuButton");
+            _danmakuSettingsButton = MakeButton("弹幕设置", () => OpenPane(Pane.DanmakuSettings), "LiveDanmakuSettingsButton");
             _chatButton = MakeButton("直播聊天", () => OpenPane(Pane.Chat), "LiveChatButton");
             _giftButton = MakeButton("礼物", () => Run(OpenGiftsAsync), "LiveGiftsButton");
             _qualityButton = MakeButton("画质", () => OpenPane(Pane.Quality), "LiveQualityButton");
-            foreach (var button in new[] { _play, _danmakuButton, _chatButton, _giftButton, _qualityButton }) controls.Children.Add(button);
+            foreach (var button in new[] { _play, _danmakuButton, _danmakuSettingsButton, _chatButton, _giftButton, _qualityButton }) controls.Children.Add(button);
             Add(_chrome, controls, 2, 0);
             _watchNotice = Text("左摇杆 / 方向键选择 · A 确认 · R 滚动面板 · B 隐藏控件 / 返回", 13); _watchNotice.TextWrapping = TextWrapping.Wrap;
             AutomationProperties.SetAutomationId(_watchNotice, "LiveWatchStatus");
@@ -166,6 +168,9 @@ namespace BiliXbox.Controls
             Add(_drawer, _drawerScroll, 2, 0);
             _messages = new ListView { SelectionMode = ListViewSelectionMode.None, IsTabStop = true,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = Brush(0, 0, 0, 0) };
+            // Store lightweight strings; generate text visuals only for visible
+            // rows instead of allocating a TextBlock for every incoming packet.
+            _messages.ItemTemplate = (DataTemplate)Application.Current.Resources["LiveChatMessageTemplate"];
             AutomationProperties.SetAutomationId(_messages, "LiveChatMessages"); AutomationProperties.SetName(_messages, "实时直播消息");
             AutomationProperties.SetHelpText(_messages, "右摇杆滚动消息，方向键上下阅读，向左编写弹幕。");
             ScrollViewer.SetHorizontalScrollMode(_messages, ScrollMode.Disabled); ScrollViewer.SetVerticalScrollBarVisibility(_messages, ScrollBarVisibility.Hidden);
@@ -180,17 +185,21 @@ namespace BiliXbox.Controls
             _watch.Children.Add(_drawer); _root.Children.Add(_watch);
             TvFocusEffects.AttachShowHide(_drawer, 32, 0);
             InitializeLiveCategories();
+            InitializeLiveDanmakuSettings();
             PreviewKeyDown += NativeKeyDown; PreviewKeyUp += NativeKeyUp;
             _tick.Tick += Tick; Unloaded += (s, e) => StopRequests(); UpdateBrowseActions();
         }
 
         public void Initialize(BilibiliClient api) => _api = api ?? throw new ArgumentNullException(nameof(api));
+        private long _roomsAccount;
         public async Task ShowAsync(CancellationToken token = default(CancellationToken))
         {
             if (_api == null) throw new InvalidOperationException("直播尚未初始化。");
             _external = token;
             if (_browseCts == null || _browseCts.IsCancellationRequested)
             { Cancel(ref _browseCts); _browseCts = CancellationTokenSource.CreateLinkedTokenSource(token); }
+            long account = _api.IsLoggedIn ? _api.CurrentUser?.Mid ?? 0 : 0;
+            if (_roomsAccount != account) { _roomItems.Clear(); _rooms.Items.Clear(); _roomsAccount = account; }
             if (_roomItems.Count == 0) await LoadRoomsAsync(1); else RestoreFocus();
         }
         public void Hide() => StopRequests();
@@ -214,7 +223,9 @@ namespace BiliXbox.Controls
                 { _roomItems.Add(room); _rooms.Items.Add(new LivePoster(room)); }
                 _page = Math.Max(1, result.Page); _hasMore = result.HasMore; _selectedIndex = 0;
                 _pageText.Text = "第 " + _page + " 页";
-                _notice.Text = _roomItems.Count == 0 ? _areaLabel + " · 暂无直播，输入房间号也可直接进入。" : "直播" + _areaLabel + " · " + _roomItems.Count + " 个直播间";
+                int followed = _roomItems.Count(room => room.IsFollowed);
+                _notice.Text = _roomItems.Count == 0 ? _areaLabel + " · 暂无直播，输入房间号也可直接进入。"
+                    : "直播" + _areaLabel + " · " + _roomItems.Count + " 个直播间" + (followed > 0 ? " · " + followed + " 个已关注" : "");
                 if (!_categoryOpen && !IsPlayingRoom && Visibility == Visibility.Visible) RestoreFocus();
             }
             catch (OperationCanceledException) { }
@@ -265,7 +276,7 @@ namespace BiliXbox.Controls
             FontWeight = strong ? FontWeights.SemiBold : FontWeights.Normal, Foreground = Brush(242, 255, 255, 255) };
         private static SolidColorBrush Brush(byte a, byte r, byte g, byte b) => new SolidColorBrush(Color.FromArgb(a, r, g, b));
         private static void Add(Grid grid, FrameworkElement child, int row, int col) { Grid.SetRow(child, row); Grid.SetColumn(child, col); grid.Children.Add(child); }
-        private static void Cancel(ref CancellationTokenSource source) { var old = source; source = null; if (old != null) { old.Cancel(); old.Dispose(); } }
+        private static void Cancel(ref CancellationTokenSource source) { var old = source; source = null; if (old != null) { try { old.Cancel(); } finally { old.Dispose(); } } }
         private static string Friendly(Exception exception) => string.IsNullOrWhiteSpace(exception.Message) ? "请求未完成，请稍后重试。" : exception.Message;
         private long CurrentMid => _api?.IsLoggedIn == true ? _api.CurrentUser?.Mid ?? 0 : 0;
 
@@ -274,7 +285,8 @@ namespace BiliXbox.Controls
             public LiveRoom Room { get; }
             public LivePoster(LiveRoom room)
             {
-                Room = room; Title = room.Title; CoverUrl = room.CoverUrl; Owner = room.OwnerName;
+                Room = room; Title = room.Title; CoverUrl = string.IsNullOrEmpty(room.CoverUrl) ? room.AvatarUrl : room.CoverUrl;
+                Owner = room.IsFollowed ? "已关注 · " + room.OwnerName : room.OwnerName;
                 OwnerMid = room.OwnerMid; OwnerAvatarUrl = room.AvatarUrl; PlayText = room.OnlineText;
                 DurationText = room.IsLive ? "直播中" : "未开播";
             }

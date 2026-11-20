@@ -63,6 +63,21 @@ namespace BiliXbox.AccountNavigationTests
             Check(View(page).HistoryCount==1 && View(page).ShowCount==1,
                 "home history shortcut opens authenticated history directly after normal library initialization");
             await Call(page,"CloseAccountLibraryAsync");
+            page = new MainPage();
+            await Call(page, "ShowAccountLibraryAsync", false, false, true);
+            Check(View(page).ActivityCount == 1 && View(page).ShowCount == 1, "homepage shortcut opens the existing activity surface directly");
+            page = new MainPage();
+            Set(page, "_preferredQuality", 120);
+            Api(page).CurrentUser.IsPremium = true;
+            Api(page).PlaybackResponse = quality => quality == 116 ? new PlaybackInfo { QualityId = 116 }
+                : new PlaybackInfo { QualityId = 64, AvailableQualities = new[] { new PlaybackQuality
+                    { Id = 116, Label = "1080P60", IsAvailable = true, IsProbe = true } } };
+            var lower = (Task<PlaybackInfo>)Invoke(page, "GetPreferredPlaybackAsync", Video(), 120, CancellationToken.None);
+            Check((await lower).QualityId == 116 && Field<int>(page, "_preferredQuality") == 120,
+                "if 4K is missing the best advertised lower track is probed without replacing the saved preference");
+            Api(page).PlaybackResponse = quality => new PlaybackInfo { QualityId = quality };
+            var restored = (Task<PlaybackInfo>)Invoke(page, "GetPreferredPlaybackAsync", Video(), Field<int>(page, "_preferredQuality"), CancellationToken.None);
+            Check((await restored).QualityId == 120, "the next video uses the retained 4K preference");
             page = new MainPage(); View(page).CachedView = cache;
             await Call(page, "ShowAccountLibraryAsync", false, true);
             Check(View(page).FavoritesCount == 1, "Favorites shortcut opens actual favorite folders");

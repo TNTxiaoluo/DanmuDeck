@@ -684,7 +684,7 @@ function Test-LoginReadOnly {
 }
 function Test-LiveReadOnly {
     $ids = @('LiveSectionButton', 'HomeButton', 'PopularSectionButton', 'AnimationSectionButton', 'FilmSectionButton')
-    $names = @('直播', '推荐', '热门', '动画', '影视')
+    $names = @('直播', '推荐', '热门', '番剧', '影视')
     $lastRight = 0
     for ($index = 0; $index -lt $ids.Count; $index++) {
         $button = Wait-AppElement -AutomationId $ids[$index] -AnyName -Seconds 5
@@ -696,6 +696,12 @@ function Test-LiveReadOnly {
     }
     if (-not $report.LiveResults.DefaultRecommendation) { throw 'Startup did not select recommendation.' }
     $report.LiveResults.TabOrder = $names
+    $activityShortcut = @(Find-AppElements -AutomationId 'HomeActivityButton' -AnyName)
+    $report.LiveResults.ActivityShortcutVisible = $activityShortcut.Count -eq 1 -and $activityShortcut[0].Current.Name -eq 'UP 动态'
+    if ($report.LiveResults.ActivityShortcutVisible) {
+        $bounds = $activityShortcut[0].Current.BoundingRectangle
+        $report.LiveResults.ActivityShortcutDoesNotOverlapTabs = $bounds.Left -ge $lastRight - 1
+    }
     foreach ($id in @('PopularSectionButton', 'AnimationSectionButton', 'FilmSectionButton')) {
         Invoke-LiveReadOnly (Wait-AppElement -AutomationId $id -AnyName -Seconds 3)
         $selected = Wait-AppElement -AutomationId $id -AnyName -Seconds 3

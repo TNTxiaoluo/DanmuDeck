@@ -9,12 +9,22 @@ namespace BiliXbox.Services
     public sealed class DanmakuSettingsStore
     {
         private const string Key = "danmaku.preferences.v1";
+        private readonly string _key;
+        public DanmakuSettingsStore(string key = Key)
+        { _key = string.IsNullOrWhiteSpace(key) ? throw new ArgumentException("弹幕设置键不能为空。", nameof(key)) : key; }
+
+        public bool LoadEnabled()
+        {
+            try { object value; return !ApplicationData.Current.LocalSettings.Values.TryGetValue(_key + ".enabled", out value) || !(value is bool) || (bool)value; }
+            catch (Exception ex) when (!(ex is OutOfMemoryException)) { return true; }
+        }
+        public void SaveEnabled(bool enabled) => ApplicationData.Current.LocalSettings.Values[_key + ".enabled"] = enabled;
         public DanmakuSettings Load()
         {
             try
             {
                 object stored;
-                if (!ApplicationData.Current.LocalSettings.Values.TryGetValue(Key, out stored)) return DanmakuSettings.Default;
+                if (!ApplicationData.Current.LocalSettings.Values.TryGetValue(_key, out stored)) return DanmakuSettings.Default;
                 var values = stored as ApplicationDataCompositeValue;
                 if (values == null) return DanmakuSettings.Default;
                 return new DanmakuSettings(Number(values, "areaFraction", 1), Number(values, "opacity", 0.9),
@@ -30,7 +40,7 @@ namespace BiliXbox.Services
         {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             // One composite assignment avoids a half-written settings snapshot.
-            ApplicationData.Current.LocalSettings.Values[Key] = new ApplicationDataCompositeValue
+            ApplicationData.Current.LocalSettings.Values[_key] = new ApplicationDataCompositeValue
             {
                 ["areaFraction"] = settings.AreaFraction, ["opacity"] = settings.Opacity,
                 ["fontScale"] = settings.FontScale, ["densityLimit"] = settings.DensityLimit,

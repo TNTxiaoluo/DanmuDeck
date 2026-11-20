@@ -14,7 +14,8 @@ namespace BiliXbox
 
         private async Task<bool> ShowInlineTextInputAsync(TextBox editor, bool submitOnEnter = false)
         {
-            if (_disposed || _dialogOpen || editor == null || !editor.IsEnabled || editor.Parent == null
+            bool panelEditor = IsTvPanelOpen && IsGamepadDescendant(editor, TvPanelLayer);
+            if (_disposed || (_dialogOpen && !panelEditor) || _activeInlineTextInput != null || editor == null || !editor.IsEnabled || editor.Parent == null
                 || editor.Visibility != Visibility.Visible) return false;
             ++_textInputRequest;
             _dialogOpen = true;
@@ -36,7 +37,7 @@ namespace BiliXbox
                 {
                     _activeInlineTextInput = null;
                     _inlineTextEditor = null;
-                    _dialogOpen = false;
+                    _dialogOpen = IsTvPanelOpen;
                     _inputPaneVisible = false;
                     _lastBack = DateTimeOffset.UtcNow;
                     editor.IsReadOnly = true;
@@ -64,7 +65,7 @@ namespace BiliXbox
                 WatchView.Visibility = CreatorHub.Visibility = AccountLibrary.Visibility = Visibility.Collapsed;
                 LiveHub.Visibility = Visibility.Collapsed;
                 Header.Visibility = Footer.Visibility = HomeView.Visibility = Visibility.Visible;
-                Root.Padding = new Thickness(52, 28, 52, 20);
+                Root.Padding = HomePadding;
             }
             try
             {

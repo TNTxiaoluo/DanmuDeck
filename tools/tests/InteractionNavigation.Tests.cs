@@ -61,6 +61,8 @@ namespace BiliXbox
         private CancellationTokenSource _watchCts = new CancellationTokenSource();
         private bool _disposed, _dialogOpen, _watching = true, _creatorVisible, _libraryVisible, _liveVisible = false, _dispatchingPlayerAction, _ignore;
         private bool DispatchLiveSectionKey(VirtualKey key, bool repeat) { return true; }
+        private bool IsTvPanelOpen => false;
+        private bool HandleTvPanelKey(VirtualKey key, bool repeat) => false;
         private int _focusCancellations, _uiApplications, _closes, _creatorRequests, _loginRequests;
         private bool _creatorDispatchFlag, _creatorSawClosed;
         private object _creatorSender;

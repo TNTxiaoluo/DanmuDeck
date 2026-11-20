@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $code = [IO.File]::ReadAllText((Join-Path $root 'src/BiliXbox/MainPage.PausedRecommendations.cs'))
 $methods = ''
-foreach ($signature in @('private async Task OpenPausedRecommendationsAsync','private void ClosePausedRecommendations')) {
+foreach ($signature in @('private int CurrentCollectionIndex', 'private int PreparePausedCollection',
+    'private async Task OpenPausedRecommendationsAsync', 'private void ClosePausedRecommendations',
+    'private async Task OpenPausedCollectionEpisodeAsync', 'private bool HandlePausedRecommendationKey', 'private void FocusPausedToolbar')) {
     $match = [regex]::Match($code, '(?ms)^        ' + [regex]::Escape($signature) + '\([^\r\n]*\)\s*\{.*?^        \}')
     if (-not $match.Success) { throw "Missing method: $signature" }
     $methods += $match.Value + [Environment]::NewLine

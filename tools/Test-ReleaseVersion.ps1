@@ -26,6 +26,9 @@ foreach ($invalid in @('1.0.2b', '1.0.2', '0.0.1.0', '1.65536.0.0', '-1.0.2.0', 
     Assert-Rejected { ConvertTo-PackageVersion $invalid }
 }
 Assert-Rejected { Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -PreviousVersions '1.0.7.0' -RequestedVersion '1.0.7.0' }
+Assert-Equal (Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -PreviousVersions @('1.0.35.0','1.0.36.0') -RequestedVersion '1.0.36.0' -RebuildUninstalled) '1.0.36.0'
+Assert-Rejected { Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -PreviousVersions '1.0.36.0' -RequestedVersion '1.0.35.0' -RebuildUninstalled }
+Assert-Rejected { Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -PreviousVersions '1.0.36.0' -RebuildUninstalled }
 Assert-Rejected { Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -RequestedVersion '1.0.1.9' }
 Assert-Rejected { Get-DevelopmentPackageVersion -ReleasePackageVersion '1.0.2.0' -PreviousVersions '65535.65535.65535.0' }
 $appVersion = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/BiliXbox/Services/AppVersionInfo.cs'))

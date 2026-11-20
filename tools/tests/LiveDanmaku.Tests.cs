@@ -59,6 +59,13 @@ namespace BiliXbox.LiveDanmakuTests
             Check(result.Messages.Count == 1 && result.Messages[0].Kind == LiveChatMessageKind.Danmaku, "DANMU_MSG suffix recognized");
             Check(result.Messages[0].Text == "中文弹幕" && result.Messages[0].UserName == "测试用户" && result.Messages[0].UserId == 123, "Unicode, UID, nickname preserved");
             Check(result.Messages[0].Color == 0xff0000 && result.Messages[0].Timestamp > DateTimeOffset.UtcNow.AddSeconds(-10), "Danmaku color and timestamp");
+            foreach (int mode in new[]{1,4,5})
+            {
+                var styled=LiveDanmakuProtocol.Decode(Json("{\"cmd\":\"DANMU_MSG\",\"info\":[[0,"+mode+",36,16777215],\"styled\",[1,\"user\"]]}")).Messages.Single();
+                Check(styled.Mode==mode && styled.FontSize==36,"live rolling/top/bottom mode and font retained");
+            }
+            var invalidStyle=LiveDanmakuProtocol.Decode(Json("{\"cmd\":\"DANMU_MSG\",\"info\":[[0,99,99999,16777215],\"bounded\",[1,\"user\"]]}")).Messages.Single();
+            Check(invalidStyle.Mode==1 && invalidStyle.FontSize==25,"unknown live modes/font sizes cannot escape renderer bounds");
             byte[] ack = Json("{\"code\":0}", 8);
             byte[] heartbeat = LiveDanmakuProtocol.Packet(3, new byte[] { 0xff, 0xff, 0xff, 0xfe });
             result = LiveDanmakuProtocol.Decode(Join(ack, heartbeat, Chat()));

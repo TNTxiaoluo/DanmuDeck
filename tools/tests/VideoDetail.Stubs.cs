@@ -422,6 +422,27 @@ namespace BiliXbox.VideoDetailTests
             using (var client = new BilibiliClient())
                 Check((await client.GetVideoAsync(Bvid)).Cid == 279786, "first part supplies missing top-level CID");
 
+            StubDetail(Detail.Insert(Detail.Length - 2, ",\"ugc_season\":{\"sections\":[{\"episodes\":["
+                + "{\"bvid\":\"BV1xx411c7mD\",\"cid\":279786,\"title\":\"First\"},null]},"
+                + "{\"episodes\":[{\"bvid\":\"BV1ct4y1n7t9\",\"page\":{\"cid\":42},\"arc\":{\"title\":\"Second &amp; third\","
+                + "\"pic\":\"//i0.hdslb.com/episode.jpg\",\"duration\":82,\"owner\":{\"mid\":456,\"name\":\"episode author\"},\"stat\":{\"view\":17300}}},"
+                + "{\"bvid\":\"BV1xy411c7mD\",\"page\":{\"first_frame\":\"http://i0.hdslb.com/frame.jpg\",\"duration\":49}},"
+                + "{\"bvid\":\"BV1xx411c7mD\",\"cid\":279786},{\"bvid\":\"invalid\"}]}]}"));
+            using (var client = new BilibiliClient())
+            {
+                var list = (await client.GetVideoAsync(Bvid)).CollectionEpisodes;
+                Check(list.Select(item => item.Bvid).SequenceEqual(new[] { Bvid, "BV1ct4y1n7t9", "BV1xy411c7mD" })
+                    && list[1].Cid == 42 && list[1].Title == "Second & third",
+                    "collection episodes preserve section order and identity across duplicate/sparse metadata");
+                Check(list[0].CoverUrl == "https://i0.hdslb.com/test.jpg" && list[0].DurationText == "1:06",
+                    "missing current episode metadata uses the current video cover and duration");
+                Check(list[1].CoverUrl == "https://i0.hdslb.com/episode.jpg" && list[1].DurationText == "1:22"
+                    && list[1].Owner == "episode author" && list[1].PlayText == "1.7万次播放",
+                    "collection archive provides the same card metadata as a related video");
+                Check(list[2].CoverUrl == "https://i0.hdslb.com/frame.jpg" && list[2].DurationText == "0:49"
+                    && list[2].PlayText == "", "sparse episode metadata uses an available frame and no fabricated view count");
+            }
+
             StubDetail("<html>request blocked</html>", 412);
             using (var client = new BilibiliClient())
                 await ExpectApiError(async () => { await client.GetVideoAsync(Bvid); }, 412, "HTTP 412");

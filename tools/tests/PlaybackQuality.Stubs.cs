@@ -126,9 +126,9 @@ namespace BiliXbox.PlaybackQualityTests
                     var uhd = info.AvailableQualities.First(item => item.Id == 120);
                     var hdr = info.AvailableQualities.First(item => item.Id == 125);
                     bool unknown = state == "maybe" || state == "exception";
-                    Check(uhd.IsVisible == (state == "4k-sdr" || unknown) && uhd.IsAvailable == (state == "4k-sdr"),
+                    Check(uhd.IsVisible && uhd.IsAvailable == (state == "4k-sdr") && uhd.IsCapabilityPending == unknown,
                         "advertised-only 4K is independently filtered before its track is returned: " + state);
-                    Check(hdr.IsVisible == (state == "1080-hdr" || unknown) && hdr.IsAvailable == (state == "1080-hdr"),
+                    Check(hdr.IsVisible && hdr.IsAvailable == (state == "1080-hdr") && hdr.IsCapabilityPending == unknown,
                         "advertised-only HDR is independently filtered before its track is returned: " + state);
                     Check(info.QualityId == 80 && info.VideoWidth == 1920 && !info.IsHdr10,
                         "capability checks never relabel the actual SDR1080 source: " + state);
@@ -165,7 +165,7 @@ namespace BiliXbox.PlaybackQualityTests
                 {
                     await Login(client); var info = await client.GetPlaybackAsync(Video, 125);
                     Check(info.QualityId == (hdrSupported ? 125 : 80)
-                        && info.AvailableQualities.First(item => item.Id == 125).IsVisible == hdrSupported,
+                        && info.AvailableQualities.First(item => item.Id == 125).IsAvailable == hdrSupported,
                         "1080 HDR is gated even though its dimensions are below UHD: " + hdrSupported);
                     Check(info.IsHdr10 == hdrSupported && info.Hdr10DisplayVerified == hdrSupported && !info.FourKDisplayVerified,
                         "HDR verification stays independent of the 4K flag: " + hdrSupported);
@@ -179,7 +179,7 @@ namespace BiliXbox.PlaybackQualityTests
                 using (var client = new BilibiliClient())
                 {
                     await Login(client); var info = await client.GetPlaybackAsync(Video, 125);
-                    Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 125).IsVisible,
+                    Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 125).IsAvailable,
                         "HDR10 refuses an explicitly incompatible source bit depth: " + bits);
                 }
             }
@@ -190,7 +190,7 @@ namespace BiliXbox.PlaybackQualityTests
             using (var client = new BilibiliClient())
             {
                 await Login(client); var info = await client.GetPlaybackAsync(Video, 120);
-                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsVisible,
+                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsAvailable,
                     "a tier120 label on a1080 track cannot masquerade as real4K");
             }
             foreach (int tier in new[] { 120, 127 })
@@ -205,7 +205,7 @@ namespace BiliXbox.PlaybackQualityTests
                 using (var client = new BilibiliClient())
                 {
                     await Login(client); var info = await client.GetPlaybackAsync(Video, tier);
-                    Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == tier).IsVisible,
+                    Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == tier).IsAvailable,
                         "an oversized tier label cannot promote an undersized actual video track: " + tier);
                 }
             }
@@ -266,9 +266,10 @@ namespace BiliXbox.PlaybackQualityTests
                 Check(info.QualityId == 120 && info.VideoWidth == 3840 && info.VideoHeight == 2160
                     && info.HardwareHevcVerified && info.FourKDisplayVerified && !info.IsHdr10,
                     "1080 dashboard plus supported4K8-bit SDR selects real4K10-bit-decode SDR track");
-                Check(info.AvailableQualities.First(item => item.Id == 120).IsVisible
-                    && !info.AvailableQualities.First(item => item.Id == 125).IsVisible,
-                    "4K8-bit SDR output independently exposes4K and hides unsupportedHDR");
+                var hdrOption = info.AvailableQualities.First(item => item.Id == 125);
+                Check(info.AvailableQualities.First(item => item.Id == 120).IsAvailable
+                    && hdrOption.IsVisible && !hdrOption.IsAvailable && hdrOption.Reason.Contains("不支持 HDR 显示"),
+                    "4K SDR remains selectable and unsupported HDR is visible with a reason");
                 Check(queried.Any(content => !content.Contains("display-res-x"))
                     && !queried.Any(content => content.Contains("display-res-x=3840") && !content.Contains("hdr=1")),
                     "supported HDMI4K mode establishes display independently of active1080, while unsupportedHDR gets its own query");
@@ -277,17 +278,18 @@ namespace BiliXbox.PlaybackQualityTests
                 display.Modes = new[] { sdr1080 };
                 display.CurrentMode = sdr4k;
                 info = await client.GetPlaybackAsync(Video, 120);
-                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsVisible
+                Check(info.QualityId == 120 && info.AllowsScaledSdrOutput && !info.FourKDisplayVerified
+                    && info.VideoWidth == 3840 && info.VideoHeight == 2160
                     && display.Queries == 2 && display.CurrentQueries == 0,
-                    "changed supported-mode configuration refreshes gates even when stale currentmode is4K");
+                    "a display without UHD still selects real4K after its decode-only capability check");
                 display.Modes = new[] { new Windows.Graphics.Display.Core.HdmiDisplayMode
                 {
                     ResolutionWidthInRawPixels = 3840, ResolutionHeightInRawPixels = 2160,
                     RefreshRate = 120, IsSdrLuminanceSupported = true
                 }};
                 info = await client.GetPlaybackAsync(Video, 120);
-                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsVisible,
-                    "120Hz-only4K does not advertise an unsupported media output");
+                Check(info.QualityId == 120 && info.AllowsScaledSdrOutput && !info.FourKDisplayVerified,
+                    "120Hz-only UHD cannot authorize a UHD HDMI switch but keeps the 4K source");
             }
             foreach (bool hdrAt4k in new[] { false, true })
             {
@@ -316,8 +318,12 @@ namespace BiliXbox.PlaybackQualityTests
                     await Login(client); var info = await client.GetPlaybackAsync(Video, 125);
                     Check(info.QualityId == (hdrAt4k ? 125 : 120) && info.IsHdr10 == hdrAt4k,
                         "HDR display must cover the actual track resolution independently of SDR4K: " + hdrAt4k);
-                    Check(info.AvailableQualities.First(item => item.Id == 125).IsVisible == hdrAt4k,
-                        "real4KHDR appears only with matchingBT2020PQ output: " + hdrAt4k);
+                    var hdrOption = info.AvailableQualities.First(item => item.Id == 125);
+                    Check(hdrOption.IsVisible && hdrOption.IsAvailable == hdrAt4k,
+                        "real4KHDR remains visible and requires compatible HDR output to select: " + hdrAt4k);
+                    if (hdrAt4k)
+                        Check(info.CodecFallback?.QualityId == 120 && info.CodecFallback.UsesSdrToneMapping == false,
+                            "an HDR playback failure tries a genuine SDR4K track before HD");
                 }
             }
             // A lower-resolution HEVC source can be returned after the HDR/4K
@@ -390,9 +396,9 @@ namespace BiliXbox.PlaybackQualityTests
                 {
                     await Login(client); var info = await client.GetPlaybackAsync(Video, 120);
                     var option = info.AvailableQualities.First(item => item.Id == 120);
-                    Check(info.QualityId == 80 && !info.FourKDisplayVerified && !option.IsAvailable
-                        && option.IsVisible == (state != "unsupported") && option.IsCapabilityPending == (state != "unsupported"),
-                        "known display refusal hides4K, unknown keeps a disabled option without approving a4K track: " + state);
+                    Check(info.QualityId == 120 && !info.FourKDisplayVerified && info.AllowsScaledSdrOutput
+                        && option.IsAvailable && option.IsVisible,
+                        "HDMI refusal or missing HDMI data does not reject a verified 4K decode: " + state);
                 }
             }
             Stub(Dash(120, 80), logged: true, premium: true);
@@ -400,7 +406,7 @@ namespace BiliXbox.PlaybackQualityTests
             using (var client = new BilibiliClient())
             {
                 await Login(client); var info = await client.GetPlaybackAsync(Video, 120);
-                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsVisible,
+                Check(info.QualityId == 80 && !info.AvailableQualities.First(item => item.Id == 120).IsAvailable,
                     "Xbox does not authorize4K AVC from a genericProbably result beyond its documented decoder ceiling");
             }
         }
@@ -597,9 +603,9 @@ namespace BiliXbox.PlaybackQualityTests
                 await Login(client);
                 var info = await client.GetPlaybackAsync(Video, 125);
                 var hidden = info.AvailableQualities.First(item => item.Id == 125);
-                Check(info.QualityId == 80 && !hidden.IsVisible && !hidden.IsAvailable
+                Check(info.QualityId == 80 && hidden.IsVisible && !hidden.IsAvailable
                     && (hidden.Reason.Contains("硬件") || hidden.Reason.Contains("4K")),
-                    "unsupported real UHD HDR10 option is hidden and falls back");
+                    "unsupported real UHD HDR10 option remains visible and disabled");
             }
             foreach (var unavailable in new[] { "not-supported", "maybe", "exception" })
             {
@@ -615,9 +621,9 @@ namespace BiliXbox.PlaybackQualityTests
                     var info = await client.GetPlaybackAsync(Video, 120);
                     Check(info.QualityId == 80 && !info.HardwareHevcVerified
                         && (info.CodecFallback == null || info.CodecFallback.QualityId < 80)
-                        && info.AvailableQualities.First(item => item.Id == 120).IsVisible == (unavailable != "not-supported")
+                        && info.AvailableQualities.First(item => item.Id == 120).IsVisible
                         && !info.AvailableQualities.First(item => item.Id == 120).IsAvailable,
-                        "unknown UHD query remains visible/disabled while confirmedNotSupported is hidden: " + unavailable);
+                        "UHD remains visible and disabled when the decoder cannot be verified: " + unavailable);
                 }
             }
             Stub(hevc, logged: true, premium: true);

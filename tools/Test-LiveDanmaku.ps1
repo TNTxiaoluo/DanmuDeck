@@ -7,6 +7,7 @@ $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskPaths = @(
     'src\BiliXbox\Models\LiveModels.cs'
     'src\BiliXbox\Services\LiveDanmakuProtocol.cs'
+    'src\BiliXbox\Services\LiveEmoteMetadata.cs'
     'src\BiliXbox\Services\LiveDanmakuClient.cs'
     'tools\tests\LiveDanmaku.Stubs.cs'
     'tools\tests\LiveDanmaku.Tests.cs'

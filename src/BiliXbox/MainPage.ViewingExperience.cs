@@ -77,10 +77,10 @@ namespace BiliXbox
         }
         private void UpdateExperienceButtons()
         {
-            ((Button)_experienceOptions[0]).Content = "播放结束：" + (_endMode == VideoEndMode.Stop ? "暂停，不循环" : _endMode == VideoEndMode.NextPart ? "连续播放分 P / 剧集" : "循环当前视频");
+            ((Button)_experienceOptions[0]).Content = "播放结束：" + (_endMode == VideoEndMode.Stop ? "暂停，不循环" : _endMode == VideoEndMode.NextPart ? "连续播放分 P / 合集 / 剧集" : "循环当前视频");
             ((Button)_experienceOptions[1]).Content = "后台音频：" + (_backgroundAudio ? "开" : "关");
             ((Button)_experienceOptions[2]).Content = "评论布局：" + (_splitComments ? "视频与评论并排" : "默认悬浮");
-            ((Button)_experienceOptions[3]).Content = "选集 / 分 P";
+            UpdateCurrentPartUi();
         }
         private void ApplyCommentLayout()
         {
@@ -106,7 +106,7 @@ namespace BiliXbox
                 if (_playingEpisodeItem != null && !_episodeChoices.Any(item => item.EpisodeId == _playingEpisodeItem.EpisodeId))
                 {
                     var episode = _playingEpisodeItem;
-                    var season = await _api.GetSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, _watchCts.Token);
+                    var season = await _api.GetPublicSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, _watchCts.Token);
                     if (_media.Source != source || episode != _playingEpisodeItem || !_watching) return true;
                     _episodeChoices = season.Episodes;
                 }
@@ -119,6 +119,13 @@ namespace BiliXbox
                 {
                     int index = _video.Parts.ToList().FindIndex(item => item.Cid == _currentCid);
                     if (index >= 0 && index + 1 < _video.Parts.Count) { await LoadPartAsync(_video.Parts[index + 1].Cid); return true; }
+                    var collection = _video.CollectionEpisodes;
+                    int episodeIndex = collection.ToList().FindIndex(episode => episode.Bvid == _video.Bvid);
+                    if (episodeIndex >= 0 && episodeIndex + 1 < collection.Count)
+                    {
+                        await PlayCollectionEpisodeAsync(collection[episodeIndex + 1], collection);
+                        return true;
+                    }
                 }
             }
             if (_videoReturnsToCreator && CreatorHub.ContinuousPlayback)
@@ -129,46 +136,103 @@ namespace BiliXbox
             }
             return false;
         }
+
+        private Task PlayCollectionEpisodeAsync(CollectionEpisode episode, IReadOnlyList<CollectionEpisode> collection)
+        {
+            return OpenVideoAsync(episode.Bvid, episode.Title, new CreatorPlaybackBookmark
+            {
+                Cid = episode.Cid, Quality = _preferredQuality, Playing = true, CollectionEpisodes = collection
+            });
+        }
+
+        private void UpdateCurrentPartUi()
+        {
+            bool hasParts = _video?.Parts?.Count > 1;
+            var part = hasParts ? _video.Parts.FirstOrDefault(item => item.Cid == _currentCid) : null;
+            VideoPartTitle.Text = part == null ? "" : PartLabel(part);
+            VideoPartTitle.Visibility = part == null ? Visibility.Collapsed : Visibility.Visible;
+            var button = (Button)_experienceOptions[3];
+            button.Content = _playingEpisodeItem != null ? "选集" : "分 P";
+            button.Visibility = hasParts || _playingEpisodeItem != null ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private static string PartLabel(VideoPart part) => "P" + part.Page + " · " + part.Title;
+
         private async Task ShowEpisodeChoicesAsync(AccountLibraryItem season = null)
         {
-            if (_dialogOpen) return;
-            _dialogOpen = true;
-            var watch = _watchCts; var video = _video;
-            var dialog = new ContentDialog { Title = "选集 / 分 P", CloseButtonText = "取消", PrimaryButtonText = "播放", RequiresPointer = RequiresPointer.Never,
-                XYFocusKeyboardNavigation = Windows.UI.Xaml.Input.XYFocusKeyboardNavigationMode.Enabled };
-            var list = new ListView { MaxHeight = 480, MinWidth = 520, SelectionMode = ListViewSelectionMode.Single,
-                IsItemClickEnabled = true, DisplayMemberPath = "Title" };
-            bool confirmed = false;
-            list.ItemClick += (s, e) => { list.SelectedItem = e.ClickedItem; confirmed = true; dialog.Hide(); };
-            _activeGeneralDialog = dialog;
-            try
+            if (_disposed || _dialogOpen) return;
+            var watch = _watchCts;
+            var video = _video;
+            var episode = season ?? _playingEpisodeItem;
+            var panel = new StackPanel { Spacing = 8 };
+            var rows = new List<Button>();
+            if (episode == null)
             {
-                var episode = season ?? _playingEpisodeItem;
-                if (episode != null)
+                if (video?.Parts?.Count <= 1 || video?.Parts == null) return;
+                VideoPart selected = null;
+                Button current = null;
+                foreach (var part in video.Parts)
                 {
-                    var data = season == null ? await _api.GetSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, watch?.Token ?? CancellationToken.None)
-                        : await _api.GetPublicSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, watch?.Token ?? CancellationToken.None);
-                    _episodeChoices = data.Episodes; list.ItemsSource = data.Episodes;
+                    bool playing = part.Cid == _currentCid;
+                    var row = CreateTvPanelRow((playing ? "✓  " : "") + PartLabel(part), () =>
+                    {
+                        selected = part;
+                        FinishTvPanel(true);
+                    }, wrap: true);
+                    panel.Children.Add(row);
+                    rows.Add(row);
+                    if (playing) current = row;
                 }
-                else list.ItemsSource = _video?.Parts;
-                if (list.Items.Count == 0) { SetStatus("此内容暂无可用分集"); return; }
-                list.SelectedIndex = Math.Max(0, episode == null ? _video.Parts.ToList().FindIndex(p => p.Cid == _currentCid)
-                    : _episodeChoices.ToList().FindIndex(p => p.EpisodeId == episode.EpisodeId));
-                dialog.Content = list; dialog.Opened += (s,e) => list.Focus(FocusState.Keyboard);
-                var result = await dialog.ShowAsync();
-                if (result != ContentDialogResult.Primary && !confirmed) return;
-                if (season == null && (watch != _watchCts || video != _video)) return;
-                var selected = list.SelectedItem;
-                _dialogOpen = false;
-                if (selected is AccountLibraryItem item) {
-                    if (season != null) _videoReturnsToCreator = _videoReturnsToLibrary = false;
-                    await PlaySelectedEpisodeAsync(item);
+                if (await ShowTvPanelAsync("分 P", panel, rows, current ?? rows[0]) && !_disposed
+                    && watch == _watchCts && video == _video && selected != null && selected.Cid != _currentCid)
+                {
+                    CloseDrawer();
+                    await LoadPartAsync(selected.Cid);
                 }
-                else if (selected is VideoPart part) { CloseDrawer(); await LoadPartAsync(part.Cid); }
+                return;
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { SetStatus("选集失败：" + Friendly(ex)); }
-            finally { _activeGeneralDialog = null; _dialogOpen = false; RestoreNavigationFocus(); }
+
+            var message = new TextBlock { Text = "正在加载分集…", TextWrapping = TextWrapping.Wrap };
+            panel.Children.Add(message);
+            using (var loading = CancellationTokenSource.CreateLinkedTokenSource(watch?.Token ?? CancellationToken.None))
+            {
+                var closed = ShowTvPanelAsync("选集", panel, rows);
+                AccountLibraryItem selected = null;
+                try
+                {
+                    var request = season == null
+                        ? _api.GetSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, loading.Token)
+                        : _api.GetPublicSeasonDetailAsync(episode.SeasonId, episode.EpisodeId, loading.Token);
+                    if (await Task.WhenAny(request, closed) == closed) loading.Cancel();
+                    var data = await request;
+                    if (closed.IsCompleted) return;
+                    _episodeChoices = data.Episodes;
+                    message.Text = "此内容暂无可用分集";
+                    Button initial = null;
+                    foreach (var item in data.Episodes)
+                    {
+                        bool playing = item.EpisodeId == episode.EpisodeId && season == null;
+                        string label = (playing ? "✓  " : "") + item.Title;
+                        if (!item.IsPlayable) label += " · " + item.UnavailableReason;
+                        var row = CreateTvPanelRow(label, () =>
+                        {
+                            selected = item;
+                            FinishTvPanel(true);
+                        }, wrap: true);
+                        row.IsEnabled = item.IsPlayable;
+                        rows.Add(row);
+                        panel.Children.Add(row);
+                        if (playing && row.IsEnabled) initial = row;
+                    }
+                    if (rows.Count > 0) message.Visibility = Visibility.Collapsed;
+                    FocusGamepadControl(initial ?? rows.FirstOrDefault(row => row.IsEnabled) ?? TvPanelCloseButton);
+                }
+                catch (OperationCanceledException) when (loading.IsCancellationRequested) { }
+                catch (Exception ex) { message.Text = "选集失败：" + Friendly(ex); }
+                if (!await closed || _disposed || watch != _watchCts || video != _video || selected == null) return;
+                if (season != null) _videoReturnsToCreator = _videoReturnsToLibrary = false;
+                await PlaySelectedEpisodeAsync(selected);
+            }
         }
         private async Task PlaySelectedEpisodeAsync(AccountLibraryItem item)
         {

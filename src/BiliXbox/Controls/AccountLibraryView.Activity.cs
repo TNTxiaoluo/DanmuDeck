@@ -155,9 +155,10 @@ namespace BiliXbox.Controls
             if (_activityEntered) { _activityHub.Navigate(direction); return; }
             _activityOrderLocked = true;
             var current = Windows.UI.Xaml.Input.FocusManager.GetFocusedElement() as Button;
-            if (current == _back || current == _signOut)
+            if (current == _back || current == _settings || current == _signOut)
             { if (direction == PlayerDirection.Down) { _authorIndex = 0; RestoreActivityFocus(); }
-                else if (direction == PlayerDirection.Left) Focus(_back); else if (direction == PlayerDirection.Right) Focus(_signOut); return; }
+                else if (direction == PlayerDirection.Left) Focus(current == _signOut ? _settings : _back);
+                else if (direction == PlayerDirection.Right) Focus(current == _back ? _settings : _signOut); return; }
             if (_moreAuthors != null && current == _moreAuthors)
             { if (direction == PlayerDirection.Up) { _authorIndex = Math.Max(0, _authors.Count - 1); RestoreActivityFocus(); } return; }
             int index = _authors.IndexOf(current);
@@ -176,6 +177,7 @@ namespace BiliXbox.Controls
             if (_activityEntered) { _activityHub.Confirm(false); return; }
             var current = Windows.UI.Xaml.Input.FocusManager.GetFocusedElement() as Button;
             if (current == _back) { if (!Back()) CloseRequested?.Invoke(this, EventArgs.Empty); return; }
+            if (current == _settings) { SettingsRequested?.Invoke(this, EventArgs.Empty); return; }
             if (current == _signOut) { SignOutRequested?.Invoke(this, EventArgs.Empty); return; }
             if (current == _moreAuthors) { Run(LoadActivityAuthorsAsync); return; }
             int focusedIndex = _authors.IndexOf(current); if (focusedIndex >= 0) _authorIndex = focusedIndex;

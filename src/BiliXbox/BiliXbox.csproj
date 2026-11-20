@@ -57,6 +57,7 @@
     <Compile Include="MainPage.CommentsNavigation.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.CommentReactions.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackTransport.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.PlaybackDiagnostics.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackDisplay.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.BackgroundPlayback.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackFailures.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
@@ -67,8 +68,10 @@
     <Compile Include="MainPage.Sections.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.InlineInput.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.AccountLibrary.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.NetworkSettings.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PlaybackSpeed.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.DanmakuComposer.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.TvPanel.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="Models\*.cs" /><Compile Include="Services\*.cs" /><Compile Include="Controls\*.cs" />
     <ApplicationDefinition Include="App.xaml"><Generator>MSBuild:Compile</Generator></ApplicationDefinition>
     <Page Include="MainPage.xaml"><Generator>MSBuild:Compile</Generator></Page>

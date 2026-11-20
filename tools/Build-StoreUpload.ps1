@@ -11,6 +11,7 @@ param(
     [string]$DisplayName = '弹幕舱',
     [string]$MSBuildPath,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\StoreUpload'),
+    [switch]$Msix,
     [switch]$PrepareOnly
 )
 
@@ -163,6 +164,7 @@ $arguments = @(
     ('/p:RestorePackagesPath=' + (Join-Path $workspace '.tools\nuget')),
     ('/flp:logfile={0};verbosity=normal;encoding=UTF-8' -f $logFile)
 )
+if ($Msix) { $arguments += @('/p:AppxPackageExtension=.msix', '/p:AppxStoreContainerExtension=.msixupload') }
 $plan = [ordered]@{
     DisplayName = $DisplayName; Version = $Version; Architecture = 'x64'; Configuration = 'Release'
     IdentityName = $IdentityName; IdentityPublisher = $IdentityPublisher; PublisherDisplayName = $PublisherDisplayName

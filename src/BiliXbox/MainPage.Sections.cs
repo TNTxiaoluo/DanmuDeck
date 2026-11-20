@@ -218,7 +218,7 @@ namespace BiliXbox
             bool playing = LiveHub.IsPlayingRoom;
             Grid.SetRow(LiveHub, playing ? 0 : 1); Grid.SetRowSpan(LiveHub, playing ? 3 : 1);
             Header.Visibility = Footer.Visibility = playing ? Visibility.Collapsed : Visibility.Visible;
-            Root.Padding = playing ? new Thickness(0) : new Thickness(52, 28, 52, 20);
+            Root.Padding = playing ? new Thickness(0) : HomePadding;
             GamepadFocusOutline.Visibility = Visibility.Collapsed;
         }
 
@@ -250,7 +250,9 @@ namespace BiliXbox
         {
             LiveHub.ReconcileScrollFocus();
             var focused = FocusManager.GetFocusedElement() as Control;
-            bool header = HomeHeaderControls.Contains(focused);
+            // A collapsed home header may retain native focus after the live
+            // controls hide. Room playback owns input regardless of that focus.
+            bool header = !LiveHub.IsPlayingRoom && HomeHeaderControls.Contains(focused);
             PlayerDirection direction;
             if (PlayerDirectionKey(key, out direction))
             {
@@ -265,7 +267,8 @@ namespace BiliXbox
                         FocusGamepadHomeControl(HomeHeaderControls[next]);
                     }
                 }
-                else if (!LiveHub.Navigate(direction)) FocusGamepadHomeControl(LiveSectionButton);
+                else if (!LiveHub.Navigate(direction))
+                { if (LiveHub.IsPlayingRoom) LiveHub.RestoreFocus(); else FocusGamepadHomeControl(LiveSectionButton); }
                 return true;
             }
             if (!PlayerConfirmKey(key)) return false;

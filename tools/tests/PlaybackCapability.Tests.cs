@@ -80,13 +80,21 @@ namespace BiliXbox.Services
                 calls.Add(type); Check(key == "com.microsoft.playready.hardware", "documented hardware query key");
                 return type.Contains("hdr=1") ? ProtectionCapabilityResult.NotSupported : ProtectionCapabilityResult.Probably;
             };
-            var modes = new PlaybackCodecSupport.DisplayModes(true, Array.Empty<PlaybackCodecSupport.OutputMode>(), true);
+            var modes = new PlaybackCodecSupport.DisplayModes(true, new[]
+            {
+                new PlaybackCodecSupport.OutputMode { Width = 1920, Height = 1080, RefreshRate = 60, Hdr10 = true }
+            }, true);
             Check(PlaybackCodecSupport.CheckDisplay("hvc1.2", 3840, 2160, 60, 22000000, 10, false, modes, log)
                 == PlaybackCodecSupport.Support.Supported, "10bit SDR decode accepted with SDR8 output despite denied HDR");
             Check(PlaybackCodecSupport.CheckDisplay("hvc1.2", 3840, 2160, 60, 22000000, 10, true, modes, log)
                 == PlaybackCodecSupport.Support.Unsupported, "HDR output denied independently of SDR");
             Check(calls.Any(type => type.Contains("decode-bpc=10") && type.Contains("display-bpc=8") && !type.Contains("hdr=1")), "SDR query never requires HDR10 output");
             Check(calls.Any(type => type.Contains("display-bpc=10,hdr=1")), "HDR10 query explicitly requests 10bit PQ output");
+            int hdrQueries = calls.Count(type => type.Contains("hdr=1"));
+            var hdrDisabled = new PlaybackCodecSupport.DisplayModes(true, Array.Empty<PlaybackCodecSupport.OutputMode>(), true);
+            Check(PlaybackCodecSupport.CheckDisplay("hvc1.2", 3840, 2160, 60, 22000000, 10, true, hdrDisabled, log)
+                == PlaybackCodecSupport.Support.Unsupported && calls.Count(type => type.Contains("hdr=1")) == hdrQueries,
+                "an enumerated device with HDR output disabled does not offer HDR while SDR remains eligible");
             double probe, output; bool trial;
             Check(PlaybackFrameRatePolicy.TryGetProbeRate(62.5, out probe, out trial) && probe == 60 && trial,
                 "near60 report requires a distinct60fps baseline probe and native validation");

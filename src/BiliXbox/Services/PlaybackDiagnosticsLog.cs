@@ -22,9 +22,34 @@ namespace BiliXbox.Services
         private const long MaxFileBytes = 262144;
         private static readonly Encoding Utf8 = new UTF8Encoding(false);
         private static readonly Queue<Report> Pending = new Queue<Report>();
+        private static readonly StringBuilder PendingRanges = new StringBuilder();
         private static Task _worker = Task.CompletedTask;
-        private static bool _running;
+        private static bool _running, _rangeFlushScheduled;
         private static long _nextReport, _droppedReports, _writeFailures;
+        private static int _droppedRanges;
+        public static void RecordRange(string line)
+        {
+            lock (Gate)
+            {
+                if (PendingRanges.Length + line.Length < ChunkChars - 128) PendingRanges.AppendLine(line);
+                else ++_droppedRanges;
+                if (_rangeFlushScheduled) return;
+                _rangeFlushScheduled = true;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(200).ConfigureAwait(false);
+                    lock (Gate)
+                    {
+                        if (_droppedRanges > 0) PendingRanges.AppendLine("range-trace-dropped count=" + _droppedRanges);
+                        Record(PendingRanges.ToString());
+                        PendingRanges.Clear();
+                        _droppedRanges = 0;
+                        _rangeFlushScheduled = false;
+                    }
+                });
+            }
+        }
+
         public static void Record(string report)
         {
             if (string.IsNullOrWhiteSpace(report)) return;

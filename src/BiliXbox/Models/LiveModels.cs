@@ -25,6 +25,7 @@ namespace BiliXbox.Models
         public long ParentAreaId { get; set; }
         public long Online { get; set; }
         public bool IsLive { get; set; }
+        public bool IsFollowed { get; set; }
         public string OnlineText => Online >= 10000 ? (Online / 10000.0).ToString("0.#", CultureInfo.InvariantCulture) + "万热度" : Online.ToString(CultureInfo.InvariantCulture) + "热度";
     }
 
@@ -77,10 +78,21 @@ namespace BiliXbox.Models
         public string Text { get; set; } = "";
         public long UserId { get; set; }
         public uint Color { get; set; } = 0xFFFFFF;
+        public int Mode { get; set; } = 1;
+        public int FontSize { get; set; } = 25;
+        public IReadOnlyList<LiveEmote> Emotes { get; set; } = Array.Empty<LiveEmote>();
         public string GiftName { get; set; } = "";
         public long GiftCount { get; set; }
         public long Popularity { get; set; }
         public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
+    }
+
+    public sealed class LiveEmote
+    {
+        public string Text { get; set; } = "";
+        public string ImageUrl { get; set; } = "";
+        public int Width { get; set; }
+        public int Height { get; set; }
     }
 
     public sealed class LiveGift

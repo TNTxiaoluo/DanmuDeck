@@ -53,7 +53,7 @@ namespace BiliXbox
         private bool _disposed, _dialogOpen, _inputPaneVisible, IsNativeGamepadEditorActive, RawGamepadOwnsNavigation;
         private bool _watching, _creatorVisible, _libraryVisible, _liveVisible, _gamepadHomeFeedReplacing, _viewingReplies;
         private bool _gamepadHomeInitialFocusDone;
-        private bool _rawLb, _lbChordUsed, _virtualLb;
+        private bool _rawLb, _lbChordUsed, _virtualLb, _accountChordUsed;
         private bool _pausedRecommendationsVisible;
         private bool _pausedPullReady = true;
         private bool CanOpenPausedRecommendations => false;
@@ -62,6 +62,7 @@ namespace BiliXbox
         private int _refreshes;
         private bool IsCommentReplySurface;
         private void RunTargetedCommentReply() { }
+        private void RunAccountChord() { }
         private void RunViewingChord(bool refresh) { if (refresh) ++_refreshes; }
         /* PRODUCTION_CHORD */
         private readonly FeedNavigationState _feedNavigation = new FeedNavigationState();

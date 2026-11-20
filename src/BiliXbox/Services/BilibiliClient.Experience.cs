@@ -101,17 +101,78 @@ namespace BiliXbox.Services
             if (seasonType == 0) seasonType = drama ? 2 : 1;
             if (seasonType != 1 && seasonType != 2 && seasonType != 3 && seasonType != 4 && seasonType != 5 && seasonType != 7) throw new ArgumentOutOfRangeException(nameof(seasonType));
             var data = RequirePgcData(await GetJsonAsync(Api + "/pgc/season/index/result?season_type=" + Invariant(seasonType)
-                + "&type=1&order=3&sort=0&pagesize=20&page=" + Invariant(page), ct));
+                + "&type=1&order=" + (seasonType == 1 ? "5" : "3") + "&sort=0&pagesize=20&page=" + Invariant(page), ct));
             var raw = data["list"] as JArray;
             if (raw == null) throw LibraryFormatError("番剧影视索引");
-            var seasons = raw.Where(item => Number(item, "season_id") > 0).Select(item => (VideoItem)new AccountLibraryItem
+            var seasons = raw.Where(item => Number(item, "season_id") > 0).Select(item => new AccountLibraryItem
             {
                 Key = "season:" + Invariant(Number(item, "season_id")), SeasonId = Number(item, "season_id"), IsSeason = true,
                 Title = PlainText(Str(item, "title")), CoverUrl = ImageUrl(Str(item, "cover")),
                 Owner = PlainText(Str(item, "index_show")), DurationText = Str(item, "badge"),
                 PlayText = PlainText(Str(item, "order"))
             }).ToArray();
-            return new SearchPage { Videos = seasons, Total = Number(data, "total"), HasMore = (long)page * 20 < Number(data, "total") };
+            IReadOnlyList<VideoItem> cards = seasons;
+            if (page == 1 && seasonType == 1)
+                cards = await PrioritizeAnimeCatalogAsync(seasons, ct);
+            ct.ThrowIfCancellationRequested();
+            return new SearchPage { Videos = cards, Total = Number(data, "total"), HasMore = (long)page * 20 < Number(data, "total") };
+        }
+
+        private async Task<IReadOnlyList<VideoItem>> PrioritizeAnimeCatalogAsync(AccountLibraryItem[] seasons, CancellationToken ct)
+        {
+            var recent = GetRecentAnimeAsync(ct);
+            IReadOnlyList<AccountLibraryItem> followed = Array.Empty<AccountLibraryItem>();
+            if (IsLoggedIn)
+            {
+                long account = CurrentUser?.Mid ?? 0;
+                using (var request = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    request.CancelAfter(TimeSpan.FromSeconds(4));
+                    try
+                    {
+                        var following = await GetFollowedSeasonsAsync(false, 1, request.Token);
+                        if (account == CurrentUser?.Mid && IsLoggedIn)
+                        {
+                            foreach (var item in following.Items) item.Owner = "已追番 · " + item.Owner;
+                            followed = following.Items;
+                        }
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested && !(ex is OutOfMemoryException))
+                    { /* The public catalogue is still available. */ }
+                }
+            }
+            return followed.Concat(await recent).Concat(seasons)
+                .GroupBy(item => item.SeasonId).Select(group => group.First()).ToArray();
+        }
+
+        private async Task<IReadOnlyList<AccountLibraryItem>> GetRecentAnimeAsync(CancellationToken ct)
+        {
+            using (var request = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                request.CancelAfter(TimeSpan.FromSeconds(4));
+                try
+                {
+                    var data = RequirePgcData(await GetJsonAsync(Api
+                        + "/pgc/web/timeline/v2?season_type=1&day_before=7&day_after=0", request.Token));
+                    var latest = data["latest"] as JArray ?? new JArray();
+                    return latest.Where(item => Number(item, "published") == 1 && Number(item, "season_id") > 0)
+                        .OrderByDescending(item => Str(item, "pub_index") == "第1话")
+                        .ThenByDescending(item => Number(item, "pub_ts"))
+                        .GroupBy(item => Number(item, "season_id")).Take(12).Select(group =>
+                        {
+                            var item = group.First();
+                            string cover = Str(item, "ep_cover");
+                            return new AccountLibraryItem
+                            {
+                                Key = "season:" + Invariant(group.Key), SeasonId = group.Key, IsSeason = true,
+                                Title = PlainText(Str(item, "title")), CoverUrl = ImageUrl(cover.Length > 0 ? cover : Str(item, "cover")),
+                                Owner = "最近更新 · " + PlainText(Str(item, "pub_index")), PlayText = PlainText(Str(item, "follows"))
+                            };
+                        }).ToArray();
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && !(ex is OutOfMemoryException))
+                { return Array.Empty<AccountLibraryItem>(); }
+            }
         }
 
         public async Task<IReadOnlyList<SubtitleTrack>> GetSubtitlesAsync(VideoDetail video, long cid, CancellationToken ct)

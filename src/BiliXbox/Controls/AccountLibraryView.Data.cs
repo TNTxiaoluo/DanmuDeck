@@ -24,6 +24,13 @@ namespace BiliXbox.Controls
             OpenSection(LibraryPane.Folders);
         }
 
+        public void OpenActivity()
+        {
+            if (!HasAccount) return;
+            if (_state.Pane == LibraryPane.Activity) { RestoreFocus(); return; }
+            OpenSection(LibraryPane.Activity);
+        }
+
         private void OpenSection(LibraryPane pane)
         {
             if (!HasAccount) return;

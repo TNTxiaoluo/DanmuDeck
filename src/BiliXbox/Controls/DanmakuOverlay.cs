@@ -24,6 +24,7 @@ namespace BiliXbox.Controls
         private const int MaximumAdmissionsPerFrame = 12;
         private const double FixedLifetime = 4.5;
         private const double SeekThreshold = 0.75;
+        private const double MaximumLeadSeconds = 0.25;
 
         private readonly List<Entry> _sourceEntries = new List<Entry>();
         private readonly List<Entry> _entries = new List<Entry>();
@@ -38,6 +39,7 @@ namespace BiliXbox.Controls
         private double _anchorSeconds;
         private double _lastRenderedSeconds;
         private double _lastSampleSeconds;
+        private double _playbackRate = 1;
         private double _clockRate = 1;
         private double _lineHeight = 36;
         private double _fontSize = 24;
@@ -56,6 +58,7 @@ namespace BiliXbox.Controls
         }
 
         public DanmakuSettings Settings => _settings;
+        internal Func<IReadOnlyList<CommentContentPart>, double, double, int, FrameworkElement> RichContentFactory { get; set; }
         public int IgnoredRuleCount => _filter.IgnoredRuleCount;
 
         // Null rules retain the current account rules; an empty list clears them.
@@ -124,22 +127,31 @@ namespace BiliXbox.Controls
         }
 
         /// <summary>Synchronizes both running and paused playback with the player.</summary>
-        public void Update(TimeSpan position, bool isPlaying)
+        public void Update(TimeSpan position, bool isPlaying, double playbackRate = 1)
         {
             if (_disposed) return;
             double seconds = Math.Max(0, position.TotalSeconds);
             if (double.IsNaN(seconds) || double.IsInfinity(seconds)) return;
+            if (playbackRate <= 0 || double.IsNaN(playbackRate) || double.IsInfinity(playbackRate)) playbackRate = 1;
             double expected = CurrentSeconds();
-            bool seek = !_hasPosition || Math.Abs(seconds - expected) > SeekThreshold ||
-                seconds < _lastSampleSeconds - 0.25;
+            double elapsed = _isPlaying ? _playbackClock.Elapsed.TotalSeconds : 0;
+            double advance = seconds - _lastSampleSeconds;
+            // The extrapolated drawing position stops when samples are late.
+            // Use elapsed wall time to distinguish that delay from a real seek.
+            double normalAdvance = elapsed * Math.Max(_playbackRate, playbackRate);
+            bool seek = !_hasPosition || advance < -MaximumLeadSeconds || advance > normalAdvance + SeekThreshold;
 
             // MediaPlaybackSession.Position can repeat between samples. Resetting
             // the animation to that stale value pulls every message backwards.
             // Keep the rendered clock monotonic and correct small drift through
             // its rate; real seeks and pause/buffer transitions still lock to media.
             bool smooth = !seek && _isPlaying && isPlaying;
-            _anchorSeconds = smooth ? Math.Max(_lastRenderedSeconds, expected) : seconds;
-            _clockRate = smooth ? Math.Max(0.85, Math.Min(1.15, 1 + (seconds - expected) * 0.5)) : 1;
+            _anchorSeconds = smooth
+                ? Math.Max(Math.Max(_lastRenderedSeconds, expected), seconds - MaximumLeadSeconds * playbackRate)
+                : seconds;
+            _playbackRate = playbackRate;
+            double drift = (seconds - _anchorSeconds) * 0.5 / playbackRate;
+            _clockRate = smooth ? playbackRate * Math.Max(0.85, Math.Min(1.15, 1 + drift)) : playbackRate;
             _lastSampleSeconds = seconds;
             _isPlaying = isPlaying;
             _hasPosition = true;
@@ -168,6 +180,7 @@ namespace BiliXbox.Controls
             _anchorSeconds = 0;
             _lastRenderedSeconds = 0;
             _lastSampleSeconds = 0;
+            _playbackRate = 1;
             _clockRate = 1;
             _nextEntry = 0;
             ClearVisuals();
@@ -217,7 +230,7 @@ namespace BiliXbox.Controls
             if (!_isPlaying) return _anchorSeconds;
             // If the UI/player stops publishing position, do not let comments
             // keep moving across a frozen video indefinitely.
-            return Math.Max(_anchorSeconds, Math.Min(_lastSampleSeconds + 0.25,
+            return Math.Max(_anchorSeconds, Math.Min(_lastSampleSeconds + MaximumLeadSeconds * _playbackRate,
                 _anchorSeconds + _playbackClock.Elapsed.TotalSeconds * _clockRate));
         }
 
@@ -268,7 +281,7 @@ namespace BiliXbox.Controls
                 {
                     Children.Remove(visual.Element);
                     _visuals.RemoveAt(i);
-                    if (_pool.Count < 64) _pool.Push(visual);
+                    RecycleVisual(visual);
                 }
             }
         }
@@ -287,35 +300,45 @@ namespace BiliXbox.Controls
             else
             {
                 var translation = new TranslateTransform();
-                visual = new Visual { Element = new TextBlock { FontWeight = FontWeights.SemiBold,
+                visual = new Visual { TextElement = new TextBlock { FontWeight = FontWeights.SemiBold,
                     TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis,
                     IsHitTestVisible = false, RenderTransform = translation }, Translation = translation };
-                SetLeft(visual.Element, 0);
+                SetLeft(visual.TextElement, 0);
             }
-            var block = visual.Element;
+            var block = visual.TextElement;
             block.Text = entry.Text;
             block.FontSize = _fontSize * entry.FontSize / 25.0;
             block.Foreground = ColorBrush(entry.Rgb);
             block.MaxWidth = Math.Max(1, ActualWidth * 0.8);
             block.Opacity = _settings.Opacity;
-            if (entry.CachedFont != block.FontSize || entry.CachedMaximum != block.MaxWidth || entry.CachedWidth <= 0)
+            FrameworkElement element = block;
+            if (entry.ContentParts.Count > 0 && RichContentFactory != null)
             {
-                block.Measure(new Size(block.MaxWidth, _lineHeight));
-                entry.CachedWidth = Math.Min(block.MaxWidth, Math.Max(1, block.DesiredSize.Width));
+                try { element = RichContentFactory(entry.ContentParts, block.FontSize, block.MaxWidth, entry.Rgb) ?? block; }
+                catch (Exception) { element = block; }
+            }
+            visual.Element = element;
+            element.IsHitTestVisible = false; element.Opacity = _settings.Opacity; element.MaxWidth = block.MaxWidth;
+            element.RenderTransform = visual.Translation;
+            if (!ReferenceEquals(element, block)) SetLeft(element, 0);
+            if (!ReferenceEquals(element, block) || entry.CachedFont != block.FontSize || entry.CachedMaximum != block.MaxWidth || entry.CachedWidth <= 0)
+            {
+                element.Measure(new Size(block.MaxWidth, _lineHeight));
+                entry.CachedWidth = Math.Min(block.MaxWidth, Math.Max(1, element.DesiredSize.Width));
                 entry.CachedFont = block.FontSize;
                 entry.CachedMaximum = block.MaxWidth;
             }
             double width = entry.CachedWidth;
             double end = entry.Seconds + (entry.Mode == 1 ? (ActualWidth + width) / speed : FixedLifetime / _settings.SpeedScale);
-            if (end <= seconds) { _pool.Push(visual); return false; }
+            if (end <= seconds) { RecycleVisual(visual); return false; }
             if (entry.Mode != 1) x = (ActualWidth - width) / 2;
             double y = Rows(entry.Mode)[lane];
             visual.Translation.X = x;
-            SetTop(block, y);
+            SetTop(element, y);
             // Fixed comments stay above scrolling comments regardless of arrival
             // order, including when a pooled TextBlock changes comment type.
-            SetZIndex(block, entry.Mode == 1 ? 0 : 1);
-            Children.Add(block);
+            SetZIndex(element, entry.Mode == 1 ? 0 : 1);
+            Children.Add(element);
             visual.Entry = entry; visual.Mode = entry.Mode; visual.Lane = lane; visual.Y = y;
             visual.Start = entry.Seconds; visual.End = end; visual.Width = width; visual.Speed = speed; visual.LastX = x;
             _visuals.Add(visual);
@@ -438,9 +461,16 @@ namespace BiliXbox.Controls
 
         private void ClearVisuals()
         {
-            foreach (var visual in _visuals) if (_pool.Count < 64) _pool.Push(visual);
             Children.Clear();
+            foreach (var visual in _visuals) RecycleVisual(visual);
             _visuals.Clear();
+        }
+        private void RecycleVisual(Visual visual)
+        {
+            // Rich trees contain native image sources; retain only the plain
+            // text shell in the bounded pool after the message leaves the screen.
+            visual.Element = visual.TextElement;
+            if (_pool.Count < 64) _pool.Push(visual);
         }
 
         private int LowerBound(double seconds)
@@ -496,8 +526,25 @@ namespace BiliXbox.Controls
                 Rgb = item.Color & 0xFFFFFF,
                 FontSize = item.FontSize == 18 || item.FontSize == 36 ? item.FontSize : 25,
                 Mode = item.Mode == 4 || item.Mode == 5 ? item.Mode : 1,
-                SenderHash = item.SenderHash ?? ""
+                SenderHash = item.SenderHash ?? "",
+                ContentParts = CopyContentParts(item.ContentParts)
             };
+        }
+        private static IReadOnlyList<CommentContentPart> CopyContentParts(IReadOnlyList<CommentContentPart> parts)
+        {
+            if (parts == null || parts.Count == 0) return Array.Empty<CommentContentPart>();
+            var copy = new List<CommentContentPart>(); int textBudget = 256, images = 0;
+            for (int i = 0; i < parts.Count && i < 24 && textBudget > 0; i++)
+            {
+                var part = parts[i]; if (part == null) continue;
+                string text = part.IsImage ? part.AltText : part.Text;
+                text = text ?? ""; int length = Math.Min(text.Length, textBudget);
+                if (length > 0 && char.IsHighSurrogate(text[length - 1])) --length;
+                text = text.Substring(0, length); textBudget -= length;
+                bool image = part.IsImage && ++images <= 8 && (part.ImageUrl?.Length ?? 0) <= 2048;
+                copy.Add(new CommentContentPart { Text = text, AltText = text, ImageUrl = image ? part.ImageUrl : "", Width = part.Width, Height = part.Height });
+            }
+            return copy;
         }
 
         public void Dispose()
@@ -522,6 +569,7 @@ namespace BiliXbox.Controls
             public int FontSize;
             public int Mode;
             public string SenderHash;
+            public IReadOnlyList<CommentContentPart> ContentParts;
             public bool Allowed;
             public double CachedWidth, CachedFont, CachedMaximum;
         }
@@ -534,7 +582,8 @@ namespace BiliXbox.Controls
 
         private sealed class Visual
         {
-            public TextBlock Element;
+            public FrameworkElement Element;
+            public TextBlock TextElement;
             public TranslateTransform Translation;
             public int Mode;
             public int Lane;

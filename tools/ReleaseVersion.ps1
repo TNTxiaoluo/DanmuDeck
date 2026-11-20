@@ -15,7 +15,8 @@ function Get-DevelopmentPackageVersion {
     param(
         [Parameter(Mandatory)][string]$ReleasePackageVersion,
         [string[]]$PreviousVersions = @(),
-        [string]$RequestedVersion
+        [string]$RequestedVersion,
+        [switch]$RebuildUninstalled
     )
     $release = ConvertTo-PackageVersion $ReleasePackageVersion
     $highest = $null
@@ -23,9 +24,14 @@ function Get-DevelopmentPackageVersion {
         $previous = ConvertTo-PackageVersion $value
         if ($null -eq $highest -or $previous -gt $highest) { $highest = $previous }
     }
+    if ($RebuildUninstalled -and
+        (-not $RequestedVersion -or $null -eq $highest -or (ConvertTo-PackageVersion $RequestedVersion) -ne $highest)) {
+        throw 'Rebuilding an uninstalled package requires explicitly selecting the latest development install version.'
+    }
     if ($RequestedVersion) {
         $requested = ConvertTo-PackageVersion $RequestedVersion
-        if ($requested -lt $release -or ($null -ne $highest -and $requested -le $highest)) {
+        if ($requested -lt $release -or ($null -ne $highest -and
+            ($requested -lt $highest -or ($requested -eq $highest -and -not $RebuildUninstalled)))) {
             throw 'The requested development package version must not precede the release base and must exceed previous development packages.'
         }
         return $requested

@@ -5,6 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using BiliXbox.Models;
 using BiliXbox.Services;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
 
 namespace BiliXbox
 {
@@ -168,5 +170,6 @@ namespace BiliXbox
             }
             current.AvailableQualities = qualities.OrderByDescending(item => item.Id).ToList();
         }
+
     }
 }

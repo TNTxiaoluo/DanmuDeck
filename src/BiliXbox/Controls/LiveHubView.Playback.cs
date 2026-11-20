@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -20,6 +19,7 @@ namespace BiliXbox.Controls
     public sealed partial class LiveHubView
     {
         private MediaPlayer _player;
+        private MediaSource _liveMediaSource;
         private AdaptiveMediaSource _adaptive;
         private HttpClient _playHttp;
         private CancellationTokenSource _playCts;
@@ -29,8 +29,7 @@ namespace BiliXbox.Controls
         private readonly Stopwatch _liveClock = new Stopwatch();
         private DateTimeOffset _lastActivity = DateTimeOffset.UtcNow;
         private int _overlayAdmissions;
-        private readonly ConcurrentQueue<QueuedLiveMessage> _queuedMessages = new ConcurrentQueue<QueuedLiveMessage>();
-        private int _queuedMessageCount;
+        private readonly LiveMessageQueue<QueuedLiveMessage> _queuedMessages = new LiveMessageQueue<QueuedLiveMessage>();
 
         private bool RoomCurrent(int generation) => _room != null && generation == _roomGeneration &&
             _roomCts != null && !_roomCts.IsCancellationRequested;
@@ -90,6 +89,7 @@ namespace BiliXbox.Controls
                 foreach (string address in candidates)
                 {
                     AdaptiveMediaSource adaptive = null; HttpClient http = null;
+                    MediaPlayer pendingPlayer = null; MediaSource pendingMedia = null; bool adopted = false;
                     try
                     {
                         Uri uri;
@@ -107,33 +107,41 @@ namespace BiliXbox.Controls
                         adaptive = result.MediaSource;
                         // Keep full, actual server quality. The adaptive HLS
                         // pipeline uses its segment buffer and native decoder.
-                        var player = new MediaPlayer { AutoPlay = false };
-                        player.MediaOpened += (s, e) => Queue(roomGeneration, () => { if (ReferenceEquals(player, _player)) { SetBuffering(false); if (_wantsPlay) player.Play(); } });
-                        player.MediaFailed += (s, e) => Queue(roomGeneration, () => { if (ReferenceEquals(player, _player)) { SetBuffering(false); _watchNotice.Text = "直播播放失败，可打开画质面板重新加载。"; } });
-                        player.PlaybackSession.PlaybackStateChanged += (s, e) => Queue(roomGeneration, () =>
+                        var player = pendingPlayer = new MediaPlayer { AutoPlay = false };
+                        player.MediaOpened += LiveMediaOpened;
+                        player.MediaFailed += LiveMediaFailed;
+                        player.PlaybackSession.PlaybackStateChanged += LivePlaybackStateChanged;
+                        int downloadErrors = 0;
+                        adaptive.DownloadFailed += (s, e) =>
                         {
-                            if (!ReferenceEquals(player, _player)) return;
-                            var state = player.PlaybackSession.PlaybackState;
-                            AutomationProperties.SetHelpText(_surface, state.ToString());
-                            AutomationProperties.SetHelpText(_play, state.ToString());
-                            SetBuffering(state == MediaPlaybackState.Opening || state == MediaPlaybackState.Buffering);
-                            _play.Content = state == MediaPlaybackState.Playing ? "暂停" : "播放";
-                            if (state == MediaPlaybackState.Playing)
-                                _watchNotice.Text = "直播中 · " + playback.QualityLabel + " · 左摇杆 / 方向键选择 · A 确认 · R 滚动面板 · B 隐藏控件 / 返回";
-                            else if (state == MediaPlaybackState.Opening || state == MediaPlaybackState.Buffering)
-                                _watchNotice.Text = "正在缓冲直播视频…";
-                        });
-                        var media = MediaSource.CreateFromAdaptiveMediaSource(adaptive);
-                        DisposeMedia(); _adaptive = adaptive; adaptive = null; _playHttp = http; http = null; _player = player; _playback = playback;
+                            if (Interlocked.Increment(ref downloadErrors) > 24) return;
+                            try
+                            {
+                                PlaybackDiagnosticsLog.Record("live-download-failed room=" + roomId + " generation=" + roomGeneration
+                                    + " quality=" + playback.QualityId + " type=" + (int)e.ResourceType
+                                    + " http=" + (e.HttpResponseMessage == null ? 0 : (int)e.HttpResponseMessage.StatusCode)
+                                    + " hresult=" + (e.ExtendedError?.HResult ?? 0).ToString("X8"));
+                            }
+                            catch (Exception) { /* Native telemetry must not interrupt the event thread. */ }
+                        };
+                        var media = pendingMedia = MediaSource.CreateFromAdaptiveMediaSource(adaptive);
+                        DisposeMedia(); _adaptive = adaptive; adaptive = null; _playHttp = http; http = null; _player = player; _playback = playback; _liveMediaSource = media;
+                        adopted = true;
+                        RecordLive("source-attached");
                         _surface.SetMediaPlayer(player); player.Source = media;
                         _qualityButton.Content = string.IsNullOrWhiteSpace(playback.QualityLabel) ? "画质" : playback.QualityLabel;
                         if (_wantsPlay) player.Play();
                         _watchNotice.Text = "正在缓冲直播视频…";
                         failure = null; attached = true; break;
                     }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { failure = ex; }
-                    finally { adaptive?.Dispose(); http?.Dispose(); }
+                    catch (OperationCanceledException) { if (adopted) DisposeMedia(); throw; }
+                    catch (Exception ex) { if (adopted) DisposeMedia(); failure = ex; }
+                    finally
+                    {
+                        LiveResourceCleanup.Run(ex => RecordLive("candidate-cleanup-failed", ex),
+                            () => { if (!adopted) pendingPlayer?.Dispose(); }, () => { if (!adopted) pendingMedia?.Dispose(); },
+                            () => adaptive?.Dispose(), () => http?.Dispose());
+                    }
                 }
                 if (!attached || failure != null) throw failure ?? new InvalidOperationException("平台没有返回可用的直播播放源。");
             }
@@ -189,7 +197,8 @@ namespace BiliXbox.Controls
             {
                 if (ChatCurrent(generation, chatGeneration))
                 {
-                    var failed = _socket; _socket = null; failed?.Stop(); failed?.Dispose();
+                    var failed = _socket; _socket = null;
+                    LiveResourceCleanup.Run(ex2 => RecordLive("chat-cleanup-failed", ex2), () => failed?.Stop(), () => failed?.Dispose());
                     string message = "实时弹幕暂未连接：" + Friendly(ex) + "。可在聊天面板重新连接。";
                     _watchNotice.Text = message; if (_pane == Pane.Chat) _drawerNotice.Text = message;
                     AutomationProperties.SetHelpText(_chatButton, message);
@@ -200,13 +209,15 @@ namespace BiliXbox.Controls
             chatGeneration == _chatGeneration && _chatCts != null && !_chatCts.IsCancellationRequested;
         private void StopChatConnection()
         {
-            Interlocked.Increment(ref _chatGeneration); Cancel(ref _chatCts);
-            var socket = _socket; _socket = null; socket?.Stop(); socket?.Dispose();
+            Interlocked.Increment(ref _chatGeneration);
+            var socket = _socket; _socket = null;
+            LiveResourceCleanup.Run(ex => RecordLive("chat-cleanup-failed", ex), () => Cancel(ref _chatCts), () => socket?.Stop(), () => socket?.Dispose());
         }
         private Task ReconnectChatAsync() => IsPlayingRoom ? ConnectChatAsync(_roomGeneration) : Task.CompletedTask;
         private void Queue(int generation, Action action)
         {
-            try { var ignored = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => { if (RoomCurrent(generation)) action(); }); }
+            try { var ignored = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                { if (!RoomCurrent(generation)) return; try { action(); } catch (Exception ex) { RecordLive("callback-failed", ex); } }); }
             catch (Exception) { }
         }
         private void EnqueueMessage(int generation, int chatGeneration, LiveDanmakuClient socket, LiveChatMessage message)
@@ -214,16 +225,14 @@ namespace BiliXbox.Controls
             // Popular rooms can deliver thousands of frames per minute. Never
             // enqueue one dispatcher operation per message or grow without a
             // bound; the UI timer admits a fixed batch each frame interval.
-            if (Interlocked.Increment(ref _queuedMessageCount) > 384)
-            { Interlocked.Decrement(ref _queuedMessageCount); return; }
             _queuedMessages.Enqueue(new QueuedLiveMessage { Generation = generation, ChatGeneration = chatGeneration, Socket = socket, Message = message });
         }
         private void FlushMessages()
         {
             QueuedLiveMessage item;
-            for (int i = 0; i < 48 && _queuedMessages.TryDequeue(out item); ++i)
+            var budget = Stopwatch.StartNew();
+            for (int i = 0; i < 16 && budget.ElapsedMilliseconds < 6 && _queuedMessages.TryDequeue(out item); ++i)
             {
-                Interlocked.Decrement(ref _queuedMessageCount);
                 if (ChatCurrent(item.Generation, item.ChatGeneration) && ReferenceEquals(item.Socket, _socket)) AddMessage(item.Message, true);
             }
         }
@@ -238,8 +247,7 @@ namespace BiliXbox.Controls
             string text = message.Kind == LiveChatMessageKind.Gift ? message.UserName + " 赠送 " + message.GiftName + " × " + message.GiftCount
                 : (string.IsNullOrWhiteSpace(message.UserName) ? "" : message.UserName + "：") + message.Text;
             if (string.IsNullOrWhiteSpace(text)) return;
-            var line = Text(text, 16); line.TextWrapping = TextWrapping.Wrap; line.Margin = new Thickness(6, 7, 6, 7);
-            _messages.Items.Add(line); while (_messages.Items.Count > 250) _messages.Items.RemoveAt(0);
+            _messages.Items.Add(message); while (_messages.Items.Count > 250) _messages.Items.RemoveAt(0);
             if (_pane == Pane.Chat) FollowLatestMessage();
             if (overlay && message.Kind == LiveChatMessageKind.Danmaku && _danmaku)
             {
@@ -247,15 +255,18 @@ namespace BiliXbox.Controls
                 // clock for arrival and rendering, paused while video buffers.
                 if (++_overlayAdmissions > 3000) { _overlay.Load(Array.Empty<DanmakuItem>()); _overlayAdmissions = 0; }
                 _overlay.Add(new DanmakuItem { Time = _liveClock.Elapsed.TotalSeconds, Text = message.Text,
-                    Color = (int)(message.Color & 0xFFFFFF), SenderHash = message.UserId.ToString(), Mode = 1 });
+                    Color = (int)(message.Color & 0xFFFFFF), SenderHash = message.UserId.ToString(), Mode = message.Mode, FontSize = message.FontSize,
+                    ContentParts = LiveEmoteContent.Split(message.Text, message.Emotes) });
             }
         }
         private void Tick(object sender, object args)
         {
             if (!IsPlayingRoom) return;
-            bool playing = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+            bool playing = false;
+            try { playing = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing; }
+            catch (Exception ex) { RecordLive("state-read-failed", ex); DisposeMedia(); SetBuffering(false); _watchNotice.Text = "直播播放器已停止，可在画质面板重新加载。"; }
             if (playing) _liveClock.Start(); else _liveClock.Stop();
-            _overlay.Update(_liveClock.Elapsed, playing);
+            _overlay.Update(_liveClock.Elapsed, playing && _danmaku);
             FlushMessages();
             if (_pane == Pane.None && !_editing && playing && DateTimeOffset.UtcNow - _lastActivity > TimeSpan.FromSeconds(5))
                 _chrome.Visibility = Visibility.Collapsed;
@@ -264,23 +275,78 @@ namespace BiliXbox.Controls
         { _loading.IsActive = value; ((FrameworkElement)_loading.Tag).Visibility = value ? Visibility.Visible : Visibility.Collapsed; }
         private void WakeChrome() { if (!IsPlayingRoom) return; _lastActivity = DateTimeOffset.UtcNow; _chrome.Visibility = Visibility.Visible; }
         private void TogglePlayback()
-        { if (_player == null) return; WakeChrome(); _wantsPlay = _player.PlaybackSession.PlaybackState != MediaPlaybackState.Playing; if (_wantsPlay) _player.Play(); else _player.Pause(); }
+        { if (_player == null) return; WakeChrome(); try { _wantsPlay = _player.PlaybackSession.PlaybackState != MediaPlaybackState.Playing; if (_wantsPlay) _player.Play(); else _player.Pause(); }
+            catch (Exception ex) { RecordLive("play-pause-failed", ex); DisposeMedia(); SetBuffering(false); _watchNotice.Text = "直播播放器已停止，可在画质面板重新加载。"; } }
         private void ToggleDanmaku()
-        { _danmaku = !_danmaku; _overlay.Visibility = _danmaku ? Visibility.Visible : Visibility.Collapsed; _danmakuButton.Content = _danmaku ? "弹幕 开" : "弹幕 关"; }
+        {
+            _danmaku = !_danmaku;
+            _overlay.Visibility = _danmaku ? Visibility.Visible : Visibility.Collapsed;
+            if (!_danmaku) { _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>()); _overlayAdmissions = 0; }
+            _danmakuButton.Content = _danmaku ? "弹幕 开" : "弹幕 关";
+            try { _liveSettingsStore.SaveEnabled(_danmaku); } catch (Exception ex) { _watchNotice.Text = "弹幕开关已生效，但保存失败：" + Friendly(ex); }
+            RefreshLiveDanmakuSettings();
+        }
         private void DisposeMedia()
         {
             var player = _player; _player = null;
-            if (player != null) { _surface.SetMediaPlayer(null); player.Source = null; player.Dispose(); }
-            _adaptive?.Dispose(); _adaptive = null; _playHttp?.Dispose(); _playHttp = null;
+            var source = _liveMediaSource; _liveMediaSource = null;
+            var adaptive = _adaptive; _adaptive = null;
+            var http = _playHttp; _playHttp = null;
+            LiveResourceCleanup.Run(ex => RecordLive("media-cleanup-failed", ex),
+                () => _surface.SetMediaPlayer(null),
+                () => { if (player != null) player.MediaOpened -= LiveMediaOpened; },
+                () => { if (player != null) player.MediaFailed -= LiveMediaFailed; },
+                () => { if (player != null) player.PlaybackSession.PlaybackStateChanged -= LivePlaybackStateChanged; },
+                () => player?.Pause(), () => { if (player != null) player.Source = null; },
+                () => player?.Dispose(), () => source?.Dispose(), () => adaptive?.Dispose(), () => http?.Dispose());
+        }
+        private void RecordLive(string phase, Exception error = null)
+            => PlaybackDiagnosticsLog.Record("live-" + phase + " room=" + (_room?.Id ?? 0) + " generation=" + _roomGeneration
+                + " quality=" + (_playback?.QualityId ?? 0) + (error == null ? "" : " error=" + error.GetType().Name + " hresult=" + error.HResult.ToString("X8")));
+
+        private void LiveMediaOpened(MediaPlayer sender, object args)
+        {
+            int generation = Volatile.Read(ref _roomGeneration);
+            Queue(generation, () =>
+            {
+                if (!ReferenceEquals(sender, _player)) return;
+                RecordLive("media-opened"); SetBuffering(false); if (_wantsPlay) sender.Play();
+            });
+        }
+        private void LiveMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
+        {
+            int generation = Volatile.Read(ref _roomGeneration);
+            Queue(generation, () =>
+            {
+                if (!ReferenceEquals(sender, _player)) return;
+                RecordLive("media-failed", args.ExtendedErrorCode); SetBuffering(false); DisposeMedia(); _play.Content = "播放";
+                _watchNotice.Text = "直播播放失败，可打开画质面板重新加载。";
+            });
+        }
+        private void LivePlaybackStateChanged(MediaPlaybackSession sender, object args)
+        {
+            int generation = Volatile.Read(ref _roomGeneration);
+            Queue(generation, () =>
+            {
+                if (_player == null || !ReferenceEquals(sender, _player.PlaybackSession)) return;
+                var state = sender.PlaybackState;
+                RecordLive("state-" + state);
+                AutomationProperties.SetHelpText(_surface, state.ToString()); AutomationProperties.SetHelpText(_play, state.ToString());
+                SetBuffering(state == MediaPlaybackState.Opening || state == MediaPlaybackState.Buffering);
+                _play.Content = state == MediaPlaybackState.Playing ? "暂停" : "播放";
+                if (state == MediaPlaybackState.Playing)
+                    _watchNotice.Text = "直播中 · " + _playback.QualityLabel + " · 左摇杆 / 方向键选择 · A 确认 · R 滚动面板 · B 隐藏控件 / 返回";
+                else if (state == MediaPlaybackState.Opening || state == MediaPlaybackState.Buffering) _watchNotice.Text = "正在缓冲直播视频…";
+            });
         }
         private void LeaveRoom(bool focus = true)
         {
+            if (IsPlayingRoom) RecordLive("leave-requested");
             bool wasPlaying = IsPlayingRoom; ++_roomGeneration; ++_playGeneration;
             ++_chatOperationGeneration; ++_giftOperationGeneration;
             _sending = false; _giftBusy = false; _send.IsEnabled = true;
-            Cancel(ref _roomCts); Cancel(ref _playCts); StopChatConnection();
-            QueuedLiveMessage queued;
-            while (_queuedMessages.TryDequeue(out queued)) Interlocked.Decrement(ref _queuedMessageCount);
+            LiveResourceCleanup.Run(ex => RecordLive("cancel-failed", ex), () => Cancel(ref _roomCts), () => Cancel(ref _playCts), StopChatConnection);
+            _queuedMessages.Clear();
             _tick.Stop(); DisposeMedia(); _liveClock.Reset(); _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>());
             _room = null; _playback = null; _quote = null; _selectedGift = null; _pane = Pane.None; _editing = false; ResetChatScroll();
             _drawer.Visibility = Visibility.Collapsed; _watch.Visibility = Visibility.Collapsed; _browse.Visibility = Visibility.Visible;

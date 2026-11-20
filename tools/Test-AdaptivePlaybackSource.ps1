@@ -23,6 +23,7 @@ using Windows.Web.Http.Filters;
 using BiliXbox.Services;
 '@ + [Environment]::NewLine
 foreach ($taskFile in @('src\BiliXbox\Services\AdaptivePlaybackSource.cs',
+    'src\BiliXbox\Services\AdaptiveDownloadFailureState.cs',
     'src\BiliXbox\Services\DashRoutePolicy.cs', 'src\BiliXbox\Services\DownloadSpeedMeter.cs',
     'tools\tests\AdaptivePlaybackSource.Tests.cs')) {
     $taskText = [IO.File]::ReadAllText((Join-Path $taskRoot $taskFile))

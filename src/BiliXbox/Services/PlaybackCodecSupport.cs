@@ -66,6 +66,7 @@ namespace BiliXbox.Services
             internal bool IsXbox { get; }
             internal bool EnumerationSucceeded { get; }
             internal string Diagnostic { get; }
+            internal bool HasHdr10Mode => _modes.Any(mode => mode.Hdr10 && !mode.Stereo);
             private readonly IReadOnlyList<OutputMode> _modes;
             internal DisplayModes(bool isXbox, IReadOnlyList<OutputMode> modes, bool enumerated = false,
                 string failure = "")
@@ -175,6 +176,8 @@ namespace BiliXbox.Services
                         + " nativeTrialRequired=" + trial.ToString());
                     return Support.Supported;
                 }
+                if (hdr && modes.EnumerationSucceeded && !modes.HasHdr10Mode)
+                    return Support.Unsupported;
                 // Enumeration is constrained by Xbox settings. A limited/empty
                 // list is not a replacement for the documented decode/display
                 // capability query. Only Probably supplies this second proof;

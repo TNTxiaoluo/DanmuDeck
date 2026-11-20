@@ -98,6 +98,7 @@ namespace BiliXbox.PlaybackDisplayTests
             await OrdinaryDesktopAndUnavailable();
             await ModeSelection();
             await Dashboard1080ToSdr4K();
+            await FourKAtDefaultResolution();
             await Dci4KOutput();
             await ToneMappedSdrOutput();
             await NearSixtyFrameRateValidation();
@@ -315,6 +316,28 @@ namespace BiliXbox.PlaybackDisplayTests
             device.Request = () => { throw new InvalidOperationException("simulatedHDMIunavailable"); };
             Check(!await controller.PrepareAsync(Stream(), CancellationToken.None), "APIexception degrades to unavailable without crash");
         }
+        private static async Task FourKAtDefaultResolution()
+        {
+            var desktopMode = Mode(2560, 1440);
+            var device = Device(desktopMode);
+            device.CurrentMode = desktopMode;
+            var stream = Stream();
+            stream.QualityId = 120;
+            stream.AllowsScaledSdrOutput = true;
+            stream.FourKDisplayVerified = false;
+            var controller = new Services.PlaybackDisplayController();
+            Check(await controller.PrepareAsync(stream, CancellationToken.None) && device.Requests == 0
+                && !controller.FourKActive && stream.VideoWidth == 3840 && stream.VideoHeight == 2160,
+                "4K track keeps its encoded dimensions on a 1440p display without requesting a 4K HDMI mode");
+
+            device.Modes.Add(Mode());
+            device.Request = () => Task.FromResult(false);
+            stream.FourKDisplayVerified = true;
+            Check(await controller.PrepareAsync(stream, CancellationToken.None) && device.Requests == 1
+                && !controller.FourKActive && controller.Diagnostic == "action=default-sdr-downscale",
+                "rejected HDMI switch keeps the same 4K source in the current SDR output mode");
+        }
+
         private static async Task Dashboard1080ToSdr4K()
         {
             var fourK8bit = Mode(); fourK8bit.BitsPerPixel = 24;

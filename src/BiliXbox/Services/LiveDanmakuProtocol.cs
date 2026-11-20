@@ -170,15 +170,18 @@ namespace BiliXbox.Services
                 if (info == null || info.Count < 3) return;
                 var user = info[2] as JArray;
                 var properties = info[0] as JArray;
-                long color;
+                long color, mode, font;
                 var message = new LiveChatMessage
                 {
                     Kind = LiveChatMessageKind.Danmaku,
                     Text = Text(info[1], 512),
                     UserName = user != null && user.Count > 1 ? Text(user[1], 80) : string.Empty,
                     UserId = user != null && user.Count > 0 ? Nonnegative(user[0]) : 0,
-                    Color = properties != null && properties.Count > 3 && Number(properties[3], out color) && color >= 0 && color <= 0xFFFFFF ? (uint)color : 0xFFFFFF
+                    Color = properties != null && properties.Count > 3 && Number(properties[3], out color) && color >= 0 && color <= 0xFFFFFF ? (uint)color : 0xFFFFFF,
+                    Mode = properties != null && properties.Count > 1 && Number(properties[1], out mode) && (mode == 4 || mode == 5) ? (int)mode : 1,
+                    FontSize = properties != null && properties.Count > 2 && Number(properties[2], out font) && font >= 12 && font <= 64 ? (int)font : 25
                 };
+                message.Emotes = LiveEmoteMetadata.FromPacket(properties, message.Text);
                 if (message.Text.Length > 0) Add(result, message);
             }
             else if (command == "SEND_GIFT" && data != null)

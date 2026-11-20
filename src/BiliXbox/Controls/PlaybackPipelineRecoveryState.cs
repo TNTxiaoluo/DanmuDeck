@@ -9,8 +9,10 @@ namespace BiliXbox.Controls
     {
         public const int MaximumAttempts = 1;
         public const double MinimumPlayableBufferSeconds = 2;
+        private const double AmpleBufferSeconds = 30;
         public const double MinimumHealthyClockRate = 0.2;
         public static readonly TimeSpan MinimumWait = TimeSpan.FromSeconds(12);
+        private static readonly TimeSpan AmpleBufferWait = TimeSpan.FromSeconds(6);
         public static readonly TimeSpan ClockObservationWindow = TimeSpan.FromSeconds(2);
 
         private bool _hasSample;
@@ -86,7 +88,8 @@ namespace BiliXbox.Controls
                 _clockObservationPosition = mediaPosition;
             }
 
-            if (now - _waitingSince.Value < MinimumWait) return false;
+            var minimumWait = bufferedSeconds >= AmpleBufferSeconds ? AmpleBufferWait : MinimumWait;
+            if (now - _waitingSince.Value < minimumWait) return false;
 
             ++Attempts;
             _waitingSince = null;

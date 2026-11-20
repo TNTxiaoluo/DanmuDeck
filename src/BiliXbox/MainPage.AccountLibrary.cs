@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using BiliXbox.Controls;
 using BiliXbox.Models;
+using BiliXbox.Services;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 
@@ -28,7 +29,7 @@ namespace BiliXbox
                 Bvid = _video?.Bvid ?? _requestedBvid, Title = _video?.Title ?? _requestedTitle, Cid = _currentCid,
                 Quality = _playback?.QualityId ?? _preferredQuality,
                 Position = _restorePosition ?? _media.PlaybackSession.Position, Playing = _wantsPlayback,
-                Episode = _playingEpisodeItem
+                Episode = _playingEpisodeItem, CollectionEpisodes = _video?.CollectionEpisodes
             };
 
         private void InitializeAccountLibrary()
@@ -36,13 +37,21 @@ namespace BiliXbox
             AccountLibrary.Initialize(_api);
             AccountLibrary.CloseRequested += async (sender, args) => await CloseAccountLibraryAsync();
             AccountLibrary.SignOutRequested += async (sender, args) => await SignOutAccountAsync();
+            AccountLibrary.SettingsRequested += async (sender, args) => await ShowNetworkSettingsAsync();
             AccountLibrary.OpenItemRequested += OpenLibraryItemAsync;
         }
 
-        private async Task ShowAccountLibraryAsync(bool history = false, bool favorites = false)
+        private async Task ShowAccountLibraryAsync(bool history = false, bool favorites = false, bool activity = false)
         {
             if (_disposed || _dialogOpen || !_api.IsLoggedIn) return;
-            if (_libraryVisible) { if (history) AccountLibrary.OpenHistory(); else if (favorites) AccountLibrary.OpenFavorites(); else AccountLibrary.RestoreFocus(); return; }
+            if (_libraryVisible)
+            {
+                if (activity) AccountLibrary.OpenActivity();
+                else if (history) AccountLibrary.OpenHistory();
+                else if (favorites) AccountLibrary.OpenFavorites();
+                else AccountLibrary.RestoreFocus();
+                return;
+            }
             var historyFlush = FlushPlaybackHistoryAsync();
             bool returning = _videoReturnsToLibrary && _libraryReturn != null;
             if (returning) ReturnToAccountLibraryFromVideo(false);
@@ -70,7 +79,7 @@ namespace BiliXbox
                 if (returning) AccountLibrary.RestoreFocus();
                 else await AccountLibrary.ShowAsync(_api.CurrentUser);
                 if (!_disposed && _libraryVisible && ReferenceEquals(owner, _libraryReturn) && accountMid == CurrentAccountMid)
-                { if (history) AccountLibrary.OpenHistory(); else if (favorites) AccountLibrary.OpenFavorites(); }
+                { if (activity) AccountLibrary.OpenActivity(); else if (history) AccountLibrary.OpenHistory(); else if (favorites) AccountLibrary.OpenFavorites(); }
             }
             catch (Exception ex)
             {
@@ -101,6 +110,16 @@ namespace BiliXbox
             CaptureVisibleHomeFeedPosition();
             _homeFeedFocusAnchor = HomeFavoritesButton;
             await ShowAccountLibraryAsync(favorites: true);
+        }
+
+        private async void HomeActivity_Click(object sender, RoutedEventArgs args)
+        {
+            if (IgnorePlayerClick() || _disposed || _dialogOpen) return;
+            if (!_api.IsLoggedIn) await ShowLoginAsync();
+            if (!_api.IsLoggedIn || _disposed || _dialogOpen) return;
+            CaptureVisibleHomeFeedPosition();
+            _homeFeedFocusAnchor = HomeActivityButton;
+            await ShowAccountLibraryAsync(activity: true);
         }
 
         private void ShowAccountLibrarySurface(bool restoreFocus = true)
@@ -224,6 +243,44 @@ namespace BiliXbox
             => _playingEpisodeItem?.EpisodeId > 0
                 ? _api.GetEpisodePlaybackAsync(_playingEpisodeItem.EpisodeId, quality, token, audioMode ?? _preferredAudioMode)
                 : _api.GetPlaybackAsync(video, quality, token, audioMode ?? _preferredAudioMode);
+
+        private async Task<PlaybackInfo> GetPreferredPlaybackAsync(VideoDetail video, int preferred, CancellationToken token)
+        {
+            var playback = await GetCurrentPlaybackAsync(video, preferred, token);
+            // The server may advertise a tier which it only returns when queried explicitly.
+            var alternatives = playback.AvailableQualities
+                .Where(item => item.Id < preferred && item.Id > playback.QualityId && item.IsProbe && item.IsAvailable
+                    && PlaybackQualityEntitlement.Badge(item, _api.IsLoggedIn, _api.CurrentUser?.IsPremium == true).Length == 0)
+                .OrderByDescending(item => item.Id).Take(3).ToArray();
+            if (alternatives.Length == 0) return playback;
+            using (var probe = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                probe.CancelAfter(TimeSpan.FromSeconds(4));
+                foreach (var quality in alternatives)
+                {
+                    if (quality.Id <= playback.QualityId) break;
+                    try
+                    {
+                        var candidate = await GetCurrentPlaybackAsync(video, quality.Id, probe.Token);
+                        token.ThrowIfCancellationRequested();
+                        if (candidate.QualityId <= quality.Id && candidate.QualityId > playback.QualityId)
+                        {
+                            // Keep menu entries from the original, wider catalogue.
+                            var options = candidate.AvailableQualities.Concat(playback.AvailableQualities)
+                                .GroupBy(item => item.Id).Select(group => group.First()).OrderByDescending(item => item.Id).ToArray();
+                            candidate.AvailableQualities = options;
+                            var label = options.FirstOrDefault(item => item.Id == preferred)?.Label;
+                            candidate.QualityNotice = (label ?? "首选画质") + " 此次不可用，实际播放 " + candidate.Quality + "。";
+                            playback = candidate;
+                        }
+                    }
+                    catch (OperationCanceledException) when (!token.IsCancellationRequested && probe.IsCancellationRequested) { break; }
+                    catch (Exception ex) when (!(ex is OperationCanceledException) && !(ex is OutOfMemoryException))
+                    { PlaybackDiagnosticsLog.Record("preferred-quality-probe-failed qn=" + quality.Id + " hresult=" + ex.HResult.ToString("X8")); }
+                }
+            }
+            return playback;
+        }
 
         private static VideoDetail EpisodeVideoDetail(AccountLibraryItem item)
         {

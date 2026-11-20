@@ -23,6 +23,7 @@ namespace BiliXbox.Controls
         private readonly int _maxLength;
         private readonly string _editorName;
         private readonly string _placeholder;
+        private readonly bool _searchInput;
         private TextBox _editor;
         private readonly FrameworkElement _options;
         private StackPanel _editorLayout;
@@ -40,7 +41,8 @@ namespace BiliXbox.Controls
             _options = options;
             AttachOptions(options);
             _editorName = title + "输入内容";
-            _placeholder = primaryButtonText == "搜索" ? (title == "搜索用户" ? "输入用户昵称" : "搜索视频或用户、BV 号或视频链接") : "输入内容";
+            _searchInput = primaryButtonText == "搜索";
+            _placeholder = _searchInput ? (title == "搜索用户" ? "输入用户昵称" : "搜索视频或用户、BV 号或视频链接") : "输入内容";
             Title = title;
             PrimaryButtonText = primaryButtonText;
             CloseButtonText = "取消";
@@ -84,7 +86,7 @@ namespace BiliXbox.Controls
                 IsSpellCheckEnabled = false
             };
             var scope = new InputScope();
-            scope.Names.Add(new InputScopeName { NameValue = InputScopeNameValue.Search });
+            scope.Names.Add(new InputScopeName { NameValue = _searchInput ? InputScopeNameValue.Search : InputScopeNameValue.Default });
             _editor.InputScope = scope;
             AutomationProperties.SetName(_editor, _editorName);
             _editor.Select(Math.Max(0, Math.Min(selection, text.Length)), 0);
@@ -94,7 +96,8 @@ namespace BiliXbox.Controls
             {
                 if (_editorLayout == null) _editorLayout = new StackPanel { Spacing = 14 };
                 _editorLayout.Children.Clear();
-                _editorLayout.Children.Add(_options); _editorLayout.Children.Add(_editor);
+                _editorLayout.Children.Add(_editor);
+                _editorLayout.Children.Add(_options);
                 Content = _editorLayout;
             }
             IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(text);
@@ -161,7 +164,9 @@ namespace BiliXbox.Controls
                 RequestBack();
             }
             else if (!_nativeInputVisible && (args.Key == VirtualKey.GamepadY || args.Key == VirtualKey.F3 ||
-                (args.Key == VirtualKey.GamepadA && ReferenceEquals(FocusManager.GetFocusedElement(), _editor))))
+                ((args.Key == VirtualKey.GamepadA || args.OriginalKey == VirtualKey.GamepadA
+                    || args.Key == VirtualKey.NavigationAccept || args.OriginalKey == VirtualKey.NavigationAccept)
+                    && ReferenceEquals(FocusManager.GetFocusedElement(), _editor))))
             {
                 // After B dismisses the keyboard, A on the editor or Y starts a fresh native
                 // input session; the dismissed editor does not retain stale engagement state.

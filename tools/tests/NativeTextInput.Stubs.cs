@@ -8,7 +8,7 @@ namespace Windows.Foundation.Metadata
 }
 namespace Windows.System
 {
-    public enum VirtualKey { GamepadB, Escape, GamepadY, F3, GamepadA, Enter }
+    public enum VirtualKey { GamepadB, Escape, GamepadY, F3, GamepadA, Enter, Space, NavigationAccept }
 }
 namespace Windows.UI.Core
 {
@@ -96,7 +96,7 @@ namespace Windows.UI.Xaml.Automation
 }
 namespace Windows.UI.Xaml.Input
 {
-    public enum InputScopeNameValue { Search }
+    public enum InputScopeNameValue { Default, Search }
     public sealed class InputScopeName { public InputScopeNameValue NameValue { get; set; } }
     public sealed class InputScope
     {
@@ -104,7 +104,7 @@ namespace Windows.UI.Xaml.Input
     }
     public sealed class KeyRoutedEventArgs
     {
-        public Windows.System.VirtualKey Key;
+        public Windows.System.VirtualKey Key, OriginalKey;
         public bool Handled;
     }
     public delegate void KeyEventHandler(object sender, KeyRoutedEventArgs args);
@@ -180,9 +180,9 @@ namespace Windows.UI.Xaml.Controls
             PrimaryButtonClick?.Invoke(this, args);
             if (!args.Cancel) CloseWithResult(ContentDialogResult.Primary);
         }
-        public bool Key(Windows.System.VirtualKey key)
+        public bool Key(Windows.System.VirtualKey key, Windows.System.VirtualKey? original = null)
         {
-            var args = new Windows.UI.Xaml.Input.KeyRoutedEventArgs { Key = key };
+            var args = new Windows.UI.Xaml.Input.KeyRoutedEventArgs { Key = key, OriginalKey = original ?? key };
             _key?.Invoke(this, args);
             return args.Handled;
         }
@@ -315,7 +315,7 @@ namespace BiliXbox.NativeTextInputTests
             dialog = New(); dialog.Open(); dialog.Dispatcher.Flush(); InputPane.GetForCurrentView().RaiseShowing();
             dialog.RequestBack();
             editor = (TextBox)dialog.Content;
-            Check(dialog.Key(VirtualKey.GamepadA), "A on the editor did not reopen the native keyboard.");
+            Check(dialog.Key(VirtualKey.Space, VirtualKey.GamepadA), "Xbox A mapped to Space must reopen the editor.");
             dialog.Dispatcher.Flush();
             Check(!ReferenceEquals(editor, dialog.Content), "A reused a stale native editing session.");
             InputPane.GetForCurrentView().RaiseShowing(); dialog.Cancel();
@@ -333,13 +333,15 @@ namespace BiliXbox.NativeTextInputTests
             var options = new StackPanel(); var choice = new ComboBox(); options.Children.Add(choice);
             dialog = new NativeTextInputDialog("draft", "发送弹幕", "发送", 100, options);
             var layout = (StackPanel)dialog.Content;
-            Check(layout.Children[0] == options && layout.Children[1] is TextBox, "Composer options and native editor share one dialog.");
+            Check(layout.Children[0] is TextBox && layout.Children[1] == options, "Composer shows the native editor before its style options.");
+            Check(((TextBox)layout.Children[0]).InputScope.Names[0].NameValue == InputScopeNameValue.Default,
+                "Danmaku composer uses the normal writing keyboard.");
             dialog.Open(); dialog.Dispatcher.Flush(); choice.IsDropDownOpen = true;
             dialog.RequestBack();
             Check(!choice.IsDropDownOpen && !dialog.ClosedState, "B closes style dropdown before cancelling composer.");
             dialog.PlatformBack(); Check(!dialog.ClosedState, "Duplicate shell B does not cancel after dropdown closes.");
             AgeBack(dialog); dialog.Key(VirtualKey.GamepadY); dialog.Dispatcher.Flush();
-            Check(dialog.Content == layout && layout.Children.Count == 2 && layout.Children[0] == options,
+            Check(dialog.Content == layout && layout.Children.Count == 2 && layout.Children[1] == options,
                 "Renewing native editor keeps the same style controls without duplicate parents.");
             dialog.Hide();
             global::System.Console.WriteLine("PASS: " + _assertions + " native text dialog lifecycle checks (UWP event stubs, no device keyboard).");

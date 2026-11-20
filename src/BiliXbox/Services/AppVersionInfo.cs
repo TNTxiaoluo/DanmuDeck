@@ -32,9 +32,11 @@ namespace BiliXbox.Services
         {
             Version parsed;
             string release;
-            if (!string.IsNullOrEmpty(releaseOverride) && releaseOverride.Split('.').Length == 3
-                && Version.TryParse(releaseOverride + ".0", out parsed) && ValidVersion(parsed))
-                release = string.Format(CultureInfo.InvariantCulture, "{0}.{1}.{2}", parsed.Major, parsed.Minor, parsed.Build);
+            int parts = string.IsNullOrEmpty(releaseOverride) ? 0 : releaseOverride.Split('.').Length;
+            if ((parts == 3 || parts == 4)
+                && Version.TryParse(parts == 3 ? releaseOverride + ".0" : releaseOverride, out parsed) && ValidVersion(parsed))
+                release = parts == 4 ? parsed.ToString(4)
+                    : string.Format(CultureInfo.InvariantCulture, "{0}.{1}.{2}", parsed.Major, parsed.Minor, parsed.Build);
             else if (Version.TryParse(packageVersion, out parsed) && ValidVersion(parsed))
                 release = string.Format(CultureInfo.InvariantCulture, "{0}.{1}.{2}", parsed.Major, parsed.Minor, parsed.Build);
             else release = "未知版本";

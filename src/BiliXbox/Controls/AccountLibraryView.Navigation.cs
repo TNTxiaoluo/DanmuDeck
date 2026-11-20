@@ -76,10 +76,12 @@ namespace BiliXbox.Controls
                     Focus(sections[Math.Max(0, Math.Min(4, sectionIndex + (direction == PlayerDirection.Left ? -1 : 1)))]);
                 return;
             }
-            if (ReferenceEquals(current, _back) || ReferenceEquals(current, _signOut))
+            var header = new Control[] { _back, _settings, _signOut };
+            int headerIndex = Array.IndexOf(header, current);
+            if (headerIndex >= 0)
             {
-                if (direction == PlayerDirection.Left) Focus(_back);
-                else if (direction == PlayerDirection.Right) Focus(_signOut);
+                if (direction == PlayerDirection.Left) Focus(header[Math.Max(0, headerIndex - 1)]);
+                else if (direction == PlayerDirection.Right) Focus(header[Math.Min(header.Length - 1, headerIndex + 1)]);
                 else if (direction == PlayerDirection.Down)
                 {
                     if (_state.Pane == LibraryPane.Overview) Focus(_history);
@@ -128,6 +130,7 @@ namespace BiliXbox.Controls
                 return;
             }
             if (ReferenceEquals(current, _back)) { if (!Back()) CloseRequested?.Invoke(this, EventArgs.Empty); }
+            else if (ReferenceEquals(current, _settings)) SettingsRequested?.Invoke(this, EventArgs.Empty);
             else if (ReferenceEquals(current, _signOut) && _signOut.IsEnabled) SignOutRequested?.Invoke(this, EventArgs.Empty);
             else if (ReferenceEquals(current, _history) && _history.IsEnabled) OpenSection(LibraryPane.History);
             else if (ReferenceEquals(current, _favorites) && _favorites.IsEnabled) OpenSection(LibraryPane.Folders);

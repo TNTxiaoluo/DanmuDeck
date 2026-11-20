@@ -21,6 +21,15 @@ namespace BiliXbox.PlaybackBufferingTests
                 "nonfinite and reversed ranges do not grant playback time");
             Check(PlaybackBufferRanges.ContiguousSeconds(double.NaN, new[] { R(0, 10) }) == -1
                 && PlaybackBufferRanges.ContiguousSeconds(10, null) == -1, "invalid range query remains unknown");
+            var track = PlaybackBufferRanges.TimelineFractions(100, new[] { R(0, 20), R(60, 110), R(70, 69),
+                R(100, 101), R(-10, 20), R(double.NaN, 80), R(30, double.PositiveInfinity) });
+            Check(track.Count == 2 && track[0].Start == 0 && track[0].End == .2 && track[1].Start == .6 && track[1].End == 1,
+                "buffer track preserves unbuffered gaps, clips to duration, and rejects invalid ranges");
+            Check(PlaybackBufferRanges.TimelineFractions(.5, new[] { R(0, .7) })[0].End == .5,
+                "sub-second track uses the same minimum scale as the seek slider");
+            Check(PlaybackBufferRanges.TimelineFractions(0, new[] { R(0, 10) }).Count == 0
+                && PlaybackBufferRanges.TimelineFractions(100, null).Count == 0,
+                "unknown duration or missing native ranges draw an empty track");
 
             var policy = new PlaybackBufferingPolicy(); var source = new object();
             Check(policy.Observe(source, 1, true, true, false, false, true, 0, 100, 0) == PlaybackBufferAction.None && !policy.Waiting,

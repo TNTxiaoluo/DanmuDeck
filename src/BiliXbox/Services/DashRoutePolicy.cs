@@ -34,7 +34,53 @@ namespace BiliXbox.Services
             get { return (_video != null && _video.Urls.Length > 1) || (_audio != null && _audio.Urls.Length > 1); }
         }
 
+        internal bool HasUntriedRoute
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    var track = _video != null && _video.Urls.Length > 1 ? _video : _audio;
+                    return track != null && track.Selected + 1 < track.Urls.Length;
+                }
+            }
+        }
+
         internal int RouteChangeCount { get { lock (_gate) return _changes; } }
+        internal string ResourceKey(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri) return null;
+            lock (_gate)
+            {
+                bool video = Matches(_video, uri), audio = Matches(_audio, uri);
+                return video != audio ? (video ? "video" : "audio") : uri.AbsoluteUri;
+            }
+        }
+
+        internal IReadOnlyList<Uri> CandidateUris(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri) return Array.Empty<Uri>();
+            lock (_gate)
+            {
+                bool video = Matches(_video, uri), audio = Matches(_audio, uri);
+                if (video == audio) return Array.Empty<Uri>();
+                var track = video ? _video : _audio;
+                return new[] { track.Urls[track.Selected] }.Concat(track.Urls.Where((value, index)
+                    => index != track.Selected && !track.Unavailable.Contains(index))).ToArray();
+            }
+        }
+        internal int SelectedRouteOffset
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    var track = _video != null && _video.Urls.Length > 1 ? _video : _audio;
+                    return track == null ? 0 : track.Selected;
+                }
+            }
+        }
+
         internal int NextRouteOffset
         {
             get

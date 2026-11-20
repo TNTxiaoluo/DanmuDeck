@@ -4,9 +4,11 @@ param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
     [string]$MSBuildPath,
     [string]$Version,
+    [string]$ReleaseDisplayVersion,
     [string]$OutputDirectory,
     [string]$DistributionPath = (Join-Path $PSScriptRoot '..\artifacts\BiliXbox-Xbox-Test.zip'),
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    [switch]$RebuildUninstalled
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +49,14 @@ if ($sourceManifest.Package.Identity.Name -ne 'BiliXbox.Community' -or
     throw 'Test builds require the development identity; do not use the Store identity for sideload test packages.'
 }
 $releaseQuad = ConvertTo-PackageVersion ([string]$sourceManifest.Package.Identity.Version)
-$displayVersion = '{0}.{1}.{2}b' -f $releaseQuad.Major, $releaseQuad.Minor, $releaseQuad.Build
+$releaseDisplay = if ($ReleaseDisplayVersion) { $ReleaseDisplayVersion } else { '{0}.{1}.{2}' -f $releaseQuad.Major, $releaseQuad.Minor, $releaseQuad.Build }
+$displayQuad = $null
+if ($releaseDisplay -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$' -or
+    -not [Version]::TryParse($releaseDisplay, [ref]$displayQuad) -or
+    @($releaseDisplay.Split('.') | Where-Object { [int]$_ -gt 65535 }).Count -gt 0) {
+    throw 'ReleaseDisplayVersion must have three or four numeric components in 0..65535, without the b suffix.'
+}
+$displayVersion = $releaseDisplay + 'b'
 $statePath = Join-Path $workspace 'artifacts\development-version.json'
 Assert-NoReparsePath $statePath
 $previousVersions = @()
@@ -79,7 +88,7 @@ if (Test-Path -LiteralPath $legacyDirectory -PathType Container) {
         } finally { $archive.Dispose() }
     }
 }
-$testQuad = Get-DevelopmentPackageVersion -ReleasePackageVersion $releaseQuad.ToString() -PreviousVersions $previousVersions -RequestedVersion $Version
+$testQuad = Get-DevelopmentPackageVersion -ReleasePackageVersion $releaseQuad.ToString() -PreviousVersions $previousVersions -RequestedVersion $Version -RebuildUninstalled:$RebuildUninstalled
 $runDirectory = Join-Path $packageOutput ('build-' + [Guid]::NewGuid().ToString('N'))
 Assert-NoReparsePath $runDirectory
 $sourceProject = Join-Path $workspace 'src\BiliXbox'
@@ -116,7 +125,6 @@ if ([regex]::Matches($versionInfo, 'internal const bool IsTestBuild = (?:true|fa
     [regex]::Matches($versionInfo, 'internal const string ReleaseVersionOverride = "[^"]*";').Count -ne 1) {
     throw 'The centralized version-info constants are missing or ambiguous.'
 }
-$releaseDisplay = '{0}.{1}.{2}' -f $releaseQuad.Major, $releaseQuad.Minor, $releaseQuad.Build
 $versionInfo = [regex]::Replace($versionInfo, 'internal const bool IsTestBuild = (?:true|false);', 'internal const bool IsTestBuild = true;')
 $versionInfo = [regex]::Replace($versionInfo, 'internal const string ReleaseVersionOverride = "[^"]*";', ('internal const string ReleaseVersionOverride = "' + $releaseDisplay + '";'))
 [IO.File]::WriteAllText($versionInfoPath, $versionInfo, [Text.UTF8Encoding]::new($false))

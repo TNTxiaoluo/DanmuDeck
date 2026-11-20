@@ -110,7 +110,7 @@ namespace BiliXbox
         private readonly TextBlock SearchQueryLabel = new TextBlock();
         private readonly Grid HomeView = new Grid(), WatchView = new Grid(), Root = new Grid(), Header = new Grid(), Footer = new Grid();
         private readonly Control GamepadFocusOutline = new Control();
-        private readonly ComboBox PartSelector = new ComboBox();
+        private static readonly Thickness HomePadding = new Thickness(52, 28, 52, 12);
         private CancellationTokenSource _feedCts;
         private bool _disposed, _dialogOpen, _ignore;
         private bool _watching = false;
@@ -290,6 +290,12 @@ namespace BiliXbox
             page = new MainPage(); page.InitializeSections(); await page.SelectSectionAsync(HomeSection.Live);
             page.LiveHub.RaisePlayback(true);
             check(page.Header.Visibility == Visibility.Collapsed && page.Footer.Visibility == Visibility.Collapsed && page.Root.Padding.Left == 0, "Live playback uses full-screen player chrome");
+            FocusManager.Current=page.HomeButton;int homeBefore=page._homeConfirms,liveBefore=page.LiveHub.Confirms;
+            page.DispatchLiveSectionKey(VirtualKey.A,false);
+            check(page._homeConfirms==homeBefore&&page.LiveHub.Confirms==liveBefore+1,"collapsed header cannot steal A while room is playing");
+            int navigationBefore=page.LiveHub.Navigations;page.LiveHub.NavigateResult=false;
+            page.DispatchLiveSectionKey(VirtualKey.Right,false);
+            check(page.LiveHub.Navigations==navigationBefore+1&&ReferenceEquals(FocusManager.Current,page.LiveHub),"lost live focus restores room controls without selecting invisible home header");
             page.LiveHub.RaisePlayback(false);
             check(page.Header.Visibility == Visibility.Visible && page.Footer.Visibility == Visibility.Visible && page.Root.Padding.Left == 52, "Room exit restores shared browse chrome");
             int shows = page.LiveHub.Shows; var ownerToken = page._liveCts.Token; page.HideLiveSection();

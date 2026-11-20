@@ -207,6 +207,13 @@ namespace BiliXbox.FrameRateValidationTests
                 "missing native dimensions keep genuine 4K verification pending");
             page = new MainPage(); info = Trial(); page.Attach(info);
             page.Tracks[0].Properties.Width = page.Tracks[0].Properties.Height = 0;
+            page.SetSessionDimensions(1920, 1080);
+            info.CodecFallback = videoFallback;
+            Check(await page.Validate() && page.Loaded == null && !info.NativeFrameRateVerified
+                && info.FrameRateNotice.Contains("尺寸尚未确认"),
+                "a provisional 1080p session size at MediaOpened keeps 4K in trial without triggering a fallback");
+            page = new MainPage(); info = Trial(); page.Attach(info);
+            page.Tracks[0].Properties.Width = page.Tracks[0].Properties.Height = 0;
             page.SetSessionDimensions(3840, 2160);
             Check(await page.Validate() && info.NativeFrameRateVerified && page.Logs[0].Contains("session-native=3840x2160"),
                 "current native playback-session dimensions may confirm a track with incomplete dimensions");

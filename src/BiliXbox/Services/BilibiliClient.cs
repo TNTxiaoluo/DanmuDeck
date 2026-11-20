@@ -439,12 +439,65 @@ namespace BiliXbox.Services
                 Owner = basic.Owner, OwnerMid = basic.OwnerMid, OwnerAvatarUrl = basic.OwnerAvatarUrl,
                 PlayText = basic.PlayText, DurationText = basic.DurationText,
                 Description = Str(data, "desc"), Cid = Number(data, "cid"), Parts = parts,
-                ReplyCount = OptionalCommentCount(data["stat"]?["reply"])
+                ReplyCount = OptionalCount(data["stat"]?["reply"])
             };
             if (detail.Cid <= 0 && parts.Count > 0) detail.Cid = parts[0].Cid;
             if (detail.Aid <= 0 || detail.Cid <= 0)
                 throw new BilibiliApiException(-1, "B站返回的视频信息不完整，无法播放。");
+            detail.CollectionEpisodes = MapCollectionEpisodes(data["ugc_season"] as JObject, detail);
             return detail;
+        }
+
+        private static IReadOnlyList<CollectionEpisode> MapCollectionEpisodes(JObject collection, VideoDetail currentVideo)
+        {
+            var items = new List<CollectionEpisode>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            long collectionOwner = Number(collection, "mid");
+            foreach (var section in collection?["sections"] as JArray ?? new JArray())
+            {
+                foreach (var item in (section as JObject)?["episodes"] as JArray ?? new JArray())
+                {
+                    if (!(item is JObject)) continue;
+                    string bvid = Str(item, "bvid");
+                    if (!Regex.IsMatch(bvid, "^BV[0-9A-Za-z]{10}$") || !seen.Add(bvid)) continue;
+                    var archive = item["arc"] as JObject;
+                    var page = item["page"] as JObject;
+                    var owner = archive?["owner"] as JObject;
+                    var stats = archive?["stat"] as JObject;
+                    var current = bvid == currentVideo.Bvid ? currentVideo : null;
+                    long cid = Number(item, "cid");
+                    if (cid <= 0) cid = Number(page, "cid");
+                    if (cid <= 0 && current != null) cid = current.Cid;
+                    string title = Str(item, "title");
+                    if (string.IsNullOrWhiteSpace(title)) title = Str(archive, "title");
+                    if (string.IsNullOrWhiteSpace(title)) title = current?.Title ?? "第 " + (items.Count + 1) + " 集";
+                    else title = PlainText(title);
+
+                    string cover = ImageUrl(Str(archive, "pic"));
+                    if (cover.Length == 0) cover = ImageUrl(Str(item, "cover"));
+                    if (cover.Length == 0) cover = current?.CoverUrl ?? "";
+                    if (cover.Length == 0) cover = ImageUrl(Str(page, "first_frame"));
+
+                    long seconds = Number(archive, "duration");
+                    if (seconds <= 0) seconds = Number(page, "duration");
+                    long ownerMid = Number(owner, "mid");
+                    if (ownerMid <= 0) ownerMid = Number(archive, "mid");
+                    if (ownerMid <= 0) ownerMid = current?.OwnerMid ?? collectionOwner;
+                    string ownerName = Str(owner, "name");
+                    if (ownerName.Length == 0 && ownerMid > 0 && ownerMid == currentVideo.OwnerMid) ownerName = currentVideo.Owner;
+                    long aid = Number(archive, "aid");
+                    if (aid <= 0) aid = Number(item, "aid");
+                    long? views = OptionalCount(stats?["view"]);
+                    items.Add(new CollectionEpisode
+                    {
+                        Bvid = bvid, Cid = cid, Aid = aid, Title = title, CoverUrl = cover,
+                        Owner = ownerName, OwnerMid = ownerMid,
+                        PlayText = views.HasValue ? FormatCount(views.Value) : current?.PlayText ?? "",
+                        DurationText = seconds > 0 ? FormatDuration(seconds) : current?.DurationText ?? ""
+                    });
+                }
+            }
+            return items;
         }
 
         public Task<PlaybackInfo> GetPlaybackAsync(VideoDetail video,
@@ -625,7 +678,8 @@ namespace BiliXbox.Services
             var segment = track["SegmentBase"] ?? track["segment_base"];
             return path + "|" + Str(track, "codecs") + "|" + Number(track, "width") + "x" + Number(track, "height")
                 + "|" + Number(track, "bandwidth") + "|" + (Str(segment, "Initialization") + Str(segment, "initialization"))
-                + "|" + (Str(segment, "indexRange") + Str(segment, "index_range")) + "|" + DashManifestBuilder.IsHdr10(track);
+                + "|" + (Str(segment, "indexRange") + Str(segment, "index_range")) + "|" + DashManifestBuilder.IsHdr10(track)
+                + "|" + EffectivePlaybackQuality(track);
         }
 
         private PlaybackInfo CreateDashPlaybackChain(JToken data, List<JToken> videos, PlaybackAudioSelection audio,
@@ -636,15 +690,21 @@ namespace BiliXbox.Services
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var sameTier = ordered.Where(track => EffectivePlaybackQuality(track) == actualQuality)
                 .Where(track => seen.Add(PlaybackVideoSourceKey(track))).ToList();
-            var candidates = sameTier.Take(12).ToList();
-            var lower = ordered.Where(track => EffectivePlaybackQuality(track) < actualQuality).ToList();
-            var compatible = lower.Where(track => Number(track, "id") <= 80
-                && Str(track, "codecs").StartsWith("avc1.", StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(track => Number(track, "id")).ThenBy(track => Number(track, "bandwidth")).FirstOrDefault()
-                ?? lower.FirstOrDefault();
-            if (compatible != null && seen.Add(PlaybackVideoSourceKey(compatible))) candidates.Add(compatible);
+            const int sameTierBudget = 9;
+            var candidates = sameTier.Take(sameTierBudget).ToList();
+            foreach (var lowerTier in ordered.Where(track => EffectivePlaybackQuality(track) < actualQuality)
+                .GroupBy(EffectivePlaybackQuality))
+            {
+                // Try real SDR 4K ahead of HD. Leave room for a separate
+                // standard-audio retry and a working low tier.
+                candidates.AddRange(lowerTier.Where(track => seen.Add(PlaybackVideoSourceKey(track)))
+                    .Take(lowerTier.Key == 120 ? 2 : 1));
+                if (candidates.Count >= 15) break;
+            }
+            if (candidates.Count > 15) candidates.RemoveRange(15, candidates.Count - 15);
             PublishPlaybackDiagnostic("candidate-plan qn=" + requestedQuality + " sameTier=" + sameTier.Count
-                + " sameTierBudget=12 attempts=" + candidates.Count + " omittedByBudget=" + Math.Max(0, sameTier.Count - 12));
+                + " sameTierBudget=" + sameTierBudget + " attempts=" + candidates.Count
+                + " omittedByBudget=" + Math.Max(0, sameTier.Count - sameTierBudget));
             var provided = new HashSet<int>(videos.Select(EffectivePlaybackQuality));
             PlaybackInfo next = null;
             for (int index = candidates.Count - 1; index >= 0; --index)
@@ -712,6 +772,7 @@ namespace BiliXbox.Services
                     : DashManifestBuilder.IsDolbyAudio(audio) ? PlaybackAudioMode.Dolby : PlaybackAudioMode.Standard,
                 VideoFrameRate = DashFrameRate(selected), HardwareHevcVerified = hardwareHevc,
                 FourKDisplayVerified = fourKDisplayVerified,
+                AllowsScaledSdrOutput = data.Annotation<PlaybackTrackCapabilities>()?.ScaledSdr.Contains(selected) == true,
                 Hdr10DisplayVerified = hdr10DisplayVerified,
                 IsHdr10 = DashManifestBuilder.IsHdr10(selected),
                 UsesSdrToneMapping = toneMapped,
@@ -890,6 +951,7 @@ namespace BiliXbox.Services
             internal readonly List<JToken> Allowed = new List<JToken>();
             internal readonly HashSet<JToken> HardwareHevc = new HashSet<JToken>();
             internal readonly HashSet<JToken> FourKDisplay = new HashSet<JToken>();
+            internal readonly HashSet<JToken> ScaledSdr = new HashSet<JToken>();
             internal readonly HashSet<JToken> Hdr10Display = new HashSet<JToken>();
             internal readonly Dictionary<int, string> BlockedQualities = new Dictionary<int, string>();
             internal readonly Dictionary<int, string> UnknownQualities = new Dictionary<int, string>();
@@ -1054,6 +1116,8 @@ namespace BiliXbox.Services
                     var display = !uhd || hdr ? PlaybackCodecSupport.Support.Supported
                         : PlaybackCodecSupport.CheckDisplay(codec, width, height,
                             rate > 0 ? rate : 60, bitrate, bits, false, outputModes, trackLog);
+                    bool scaledSdr = outputModes.IsXbox && id == 120 && !hdr && IsBoundedFourKSource(track)
+                        && decode == PlaybackCodecSupport.Support.Supported;
                     var displayHdr = !hdr ? PlaybackCodecSupport.Support.Supported
                         : bits != 10 ? PlaybackCodecSupport.Support.Unsupported
                         : PlaybackCodecSupport.CheckDisplay(codec, width, height,
@@ -1061,34 +1125,35 @@ namespace BiliXbox.Services
                     checks[1] = !uhd || hdr ? "not_requested" : display.ToString();
                     checks[2] = !hdr ? "not_requested" : displayHdr.ToString();
                     if (hdr && (id == 120 || id == 125) && IsBoundedFourKSource(track) && bits == 10
-                        && decode == PlaybackCodecSupport.Support.Supported && displayHdr != PlaybackCodecSupport.Support.Supported)
+                        && decode == PlaybackCodecSupport.Support.Supported)
                     {
                         // Microsoft documents native HDR10-to-SDR tone mapping.
                         // Keep the original HDR representation and PQ metadata;
-                        // a separate output variant independently proves real
-                        // 4K decoding and a usable 4K SDR display mode.
+                        // a separate output variant retains the 4K decode and
+                        // can use either UHD SDR or the Xbox default SDR mode.
                         var sdr = PlaybackCodecSupport.CheckDisplay(codec, width, height,
                             rate > 0 ? rate : 60, bitrate, bits, false, outputModes, trackLog);
                         checks[1] = sdr.ToString();
-                        if (sdr == PlaybackCodecSupport.Support.Supported)
+                        if (sdr == PlaybackCodecSupport.Support.Supported || outputModes.IsXbox)
                         {
                             var variant = track.DeepClone();
                             variant.AddAnnotation(new SdrToneMappedPlaybackTrack { Source = track });
                             result.Allowed.Add(variant);
                             if (hevc) result.HardwareHevc.Add(variant);
-                            result.FourKDisplay.Add(variant);
+                            if (sdr == PlaybackCodecSupport.Support.Supported) result.FourKDisplay.Add(variant);
+                            if (outputModes.IsXbox) result.ScaledSdr.Add(variant);
                             trackLog.Add("HDR10→SDR 输出变体=Supported",
-                                "output-variant sourceQn=" + id + " effectiveQn=120 source=HDR10 output=SDR toneMapping=native decode=Supported sdrDisplay=Supported");
+                                "output-variant sourceQn=" + id + " effectiveQn=120 source=HDR10 output=SDR toneMapping=native decode=Supported sdrDisplay=" + sdr);
                         }
                     }
-                    if (decode != PlaybackCodecSupport.Support.Supported || display != PlaybackCodecSupport.Support.Supported
+                    if (decode != PlaybackCodecSupport.Support.Supported || (!scaledSdr && display != PlaybackCodecSupport.Support.Supported)
                         || displayHdr != PlaybackCodecSupport.Support.Supported)
                     {
                         bool unsupported = decode == PlaybackCodecSupport.Support.Unsupported
                             || display == PlaybackCodecSupport.Support.Unsupported || displayHdr == PlaybackCodecSupport.Support.Unsupported;
                         if (!unsupported) result.UnknownQualities[id] = "设备能力查询尚未确认，可重新打开播放设置重试";
                         else result.BlockedQualities[id] = decode == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档编码的硬件解码能力"
-                            : display == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档 4K 显示能力" : "当前设备不支持此档 HDR10 显示能力";
+                            : display == PlaybackCodecSupport.Support.Unsupported ? "当前设备不支持此档 4K 显示能力" : "该设备不支持 HDR 显示";
                         result.RejectedTracks[track] = unsupported ? result.BlockedQualities[id] : result.UnknownQualities[id];
                         bool invalidMetadata = trackLog.Details.Contains("validation=");
                         if (invalidMetadata) result.RejectedTracks[track] = "轨道元数据或媒体参数无效，未向系统发起对应能力查询";
@@ -1101,7 +1166,8 @@ namespace BiliXbox.Services
                     }
                     result.Allowed.Add(track);
                     if (hevc) result.HardwareHevc.Add(track);
-                    if (uhd) result.FourKDisplay.Add(track);
+                    if (uhd && (hdr || display == PlaybackCodecSupport.Support.Supported)) result.FourKDisplay.Add(track);
+                    if (scaledSdr) result.ScaledSdr.Add(track);
                     if (hdr) result.Hdr10Display.Add(track);
                     }
                     finally
@@ -1154,10 +1220,13 @@ namespace BiliXbox.Services
                     else if (id == 120 || id == 127)
                     {
                         int width = id == 127 ? 7680 : 3840, height = id == 127 ? 4320 : 2160;
-                        var support = PlaybackCodecSupport.CheckDisplay("hvc1", width, height, 30, 20000000, 10, false, outputModes, log);
+                        bool decodeOnly = id == 120 && outputModes.IsXbox;
+                        var support = decodeOnly ? PlaybackCodecSupport.CheckDecode("hvc1", width, height, 30, 20000000, 8, log)
+                            : PlaybackCodecSupport.CheckDisplay("hvc1", width, height, 30, 20000000, 10, false, outputModes, log);
                         if (support != PlaybackCodecSupport.Support.Supported)
                         {
-                            var av1 = PlaybackCodecSupport.CheckDisplay("av01", width, height, 30, 20000000, 8, false, outputModes, log);
+                            var av1 = decodeOnly ? PlaybackCodecSupport.CheckDecode("av01", width, height, 30, 20000000, 8, log)
+                                : PlaybackCodecSupport.CheckDisplay("av01", width, height, 30, 20000000, 8, false, outputModes, log);
                             support = av1 == PlaybackCodecSupport.Support.Supported ? av1
                                 : support == PlaybackCodecSupport.Support.Unknown || av1 == PlaybackCodecSupport.Support.Unknown
                                     ? PlaybackCodecSupport.Support.Unknown : PlaybackCodecSupport.Support.Unsupported;
@@ -1169,13 +1238,13 @@ namespace BiliXbox.Services
                                 : support == PlaybackCodecSupport.Support.Unknown || avc == PlaybackCodecSupport.Support.Unknown
                                     ? PlaybackCodecSupport.Support.Unknown : PlaybackCodecSupport.Support.Unsupported;
                         }
-                        if (support == PlaybackCodecSupport.Support.Unsupported) result.BlockedQualities[id] = "当前设备不支持超高清解码及显示能力";
+                        if (support == PlaybackCodecSupport.Support.Unsupported) result.BlockedQualities[id] = "当前设备不支持此档超高清播放";
                         else if (support == PlaybackCodecSupport.Support.Unknown) result.UnknownQualities[id] = "超高清能力查询尚未确认，可重新打开播放设置重试";
                     }
                     else if (id == 125)
                     {
                         var support = PlaybackCodecSupport.CheckDisplay("hvc1", 1920, 1080, 30, 20000000, 10, true, outputModes, log);
-                        if (support == PlaybackCodecSupport.Support.Unsupported) result.BlockedQualities[id] = "当前设备不支持 HDR10 解码及显示能力";
+                        if (support == PlaybackCodecSupport.Support.Unsupported) result.BlockedQualities[id] = "该设备不支持 HDR 显示";
                         else if (support == PlaybackCodecSupport.Support.Unknown) result.UnknownQualities[id] = "HDR10 能力查询尚未确认，可重新打开播放设置重试";
                     }
                 }
@@ -1312,11 +1381,14 @@ namespace BiliXbox.Services
             IDictionary<int, string> blockedQualities = null, IDictionary<int, string> unknownQualities = null)
         {
             var accepted = new JArray(data["accept_quality"] as JArray ?? new JArray());
+            var descriptions = data["accept_description"] as JArray ?? new JArray();
             // The returned representations are stronger evidence than an
             // incomplete advertised menu. Keep every real returned tier.
             foreach (var id in dashQualities ?? new HashSet<int>())
                 if (!accepted.Any(value => value.ToString() == Invariant(id))) accepted.Add(id);
-            var descriptions = data["accept_description"] as JArray ?? new JArray();
+            foreach (int id in new[] { 120, 125 })
+                if (rawVideos?.Any(track => Number(track, "id") == id) == true
+                    && !accepted.Any(value => value.ToString() == Invariant(id))) accepted.Add(id);
             var formats = data["support_formats"] as JArray ?? new JArray();
             var result = new List<PlaybackQuality>();
             for (var i = 0; i < accepted.Count; i++)
@@ -1328,7 +1400,7 @@ namespace BiliXbox.Services
                 var label = Str(support, "new_description");
                 if (string.IsNullOrWhiteSpace(label) && i < descriptions.Count) label = descriptions[i].ToString();
                 if (string.IsNullOrWhiteSpace(label)) label = Str(support, "display_desc");
-                if (string.IsNullOrWhiteSpace(label)) label = id == 120 ? "4K 超高清" : id == 127 ? "8K 超高清" : "画质 " + Invariant(id);
+                if (string.IsNullOrWhiteSpace(label)) label = id == 120 ? "4K 超高清" : id == 125 ? "HDR 真彩" : id == 127 ? "8K 超高清" : "画质 " + Invariant(id);
                 var provided = (dashQualities != null && dashQualities.Contains(id)) || id == actualQuality;
                 var outputTracks = data.Annotation<PlaybackTrackCapabilities>()?.Allowed
                     .Where(track => EffectivePlaybackQuality(track) == id).ToList() ?? new List<JToken>();
@@ -1362,7 +1434,7 @@ namespace BiliXbox.Services
                 {
                     Id = id, Label = label, RequiresLogin = needsLogin, RequiresPremium = needsPremium,
                     IsAvailable = (reason.Length == 0 || id == actualQuality) && !blocked && !unknown,
-                    IsVisible = !blocked,
+                    IsVisible = !blocked || id == 120 || id == 125,
                     IsCapabilityPending = unknown,
                     HasPlaybackSource = provided,
                     RequiresCompatibilityTrial = outputTracks.Count > 0 && outputTracks.All(track =>
@@ -1423,7 +1495,7 @@ namespace BiliXbox.Services
             return value == "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static long? OptionalCommentCount(JToken value)
+        private static long? OptionalCount(JToken value)
         {
             long count;
             return value != null && long.TryParse(value.ToString(), NumberStyles.Integer,

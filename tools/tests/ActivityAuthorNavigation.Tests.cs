@@ -41,7 +41,7 @@ namespace BiliXbox.Controls
         private readonly List<Button> _authors=new List<Button>();private readonly Dictionary<long,int> _authorOrder=new Dictionary<long,int>();
         private readonly DynamicReadTracker _activityRead=new DynamicReadTracker();
         private readonly StackPanel _authorButtons=new StackPanel();
-        private readonly Button _back=new Button(),_signOut=new Button();private Button _moreAuthors;
+        private readonly Button _back=new Button(),_settings=new Button(),_signOut=new Button();private Button _moreAuthors;
         private int _authorIndex;private long _activitySelectedMid;private bool _activityEntered,_authorsBusy,_unreadBusy,_activityOrderLocked;
         private readonly CancellationTokenSource _sessionCts=new CancellationTokenSource();private CancellationTokenSource _activityCts;
         private bool HasAccount=true;

@@ -4,8 +4,8 @@
       xmlns:models="using:BiliXbox.Models" xmlns:controls="using:BiliXbox.Controls"
       Background="#0D0D10" XYFocusKeyboardNavigation="Enabled" RequiresPointer="Never">
   <Page.Resources><controls:PlaybackTimeConverter x:Key="PlaybackTimeConverter" /></Page.Resources>
-  <Viewbox Stretch="Uniform">
-  <Grid x:Name="Root" Width="1280" Height="720" Padding="52,28,52,20">
+  <Viewbox Stretch="Uniform" SizeChanged="PageViewport_SizeChanged">
+  <Grid x:Name="Root" Width="1280" Height="720" Padding="52,28,52,12">
     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
     <Grid x:Name="Header" Margin="0,0,0,20">
       <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -24,6 +24,7 @@
         <Button x:Name="HeaderSearchButton" Content="搜索" Click="SearchFocus_Click" Padding="16,10" />
         <Button x:Name="HomeHistoryButton" Content="历史" Click="HomeHistory_Click" Padding="16,10" AutomationProperties.Name="播放历史" />
         <Button x:Name="HomeFavoritesButton" Content="收藏" Click="HomeFavorites_Click" Padding="16,10" AutomationProperties.Name="我的收藏夹" />
+        <Button x:Name="HomeActivityButton" Content="动态" Click="HomeActivity_Click" Padding="14,10" AutomationProperties.Name="UP 动态" />
         <Button x:Name="AccountButton" Content="扫码登录" Click="Account_Click" Padding="16,10" Background="#FB7299" Foreground="#0D0D10" FontWeight="SemiBold" />
         <Button x:Name="HelpButton" Content="&#xE897;" FontFamily="Segoe MDL2 Assets" Click="Help_Click" Padding="14,10" AutomationProperties.Name="帮助和手柄操作" />
       </StackPanel>
@@ -118,6 +119,7 @@
           <Button x:Name="WatchBackButton" Content="&#xE72B;" FontFamily="Segoe MDL2 Assets" Click="BackToFeed_Click" Width="52" Height="52" CornerRadius="26" AutomationProperties.Name="返回视频列表" />
           <StackPanel x:Name="VideoHeading" Grid.Column="1" Spacing="5" VerticalAlignment="Center">
             <TextBlock x:Name="VideoTitle" FontSize="24" FontWeight="SemiBold" Foreground="#F2F2F7" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="VideoPartTitle" Visibility="Collapsed" FontSize="18" FontWeight="SemiBold" Foreground="#F2F2F7" TextTrimming="CharacterEllipsis" />
             <Button x:Name="VideoOwnerButton" Click="VideoCreator_Click" Padding="8,4" MinHeight="34" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left" AutomationProperties.Name="打开 UP 主主页，查看视频和动态">
               <StackPanel Orientation="Horizontal" Spacing="10">
                 <controls:AvatarView x:Name="VideoOwnerAvatar" Width="28" Height="28" />
@@ -131,12 +133,15 @@
           </StackPanel>
         </Grid>
         <!-- Bottom vignette -->
-        <Border Height="260" VerticalAlignment="Bottom" IsHitTestVisible="False"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#00000000" /><GradientStop Color="#E6000000" Offset="1" /></LinearGradientBrush></Border.Background></Border>
-        <StackPanel VerticalAlignment="Bottom" Margin="52,0,52,24" Spacing="10">
-          <TextBlock x:Name="WatchStatus" FontSize="14" Foreground="#99F2F2F7" TextTrimming="CharacterEllipsis" />
+        <Border Height="226" VerticalAlignment="Bottom" IsHitTestVisible="False"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#00000000" /><GradientStop Color="#E6000000" Offset="1" /></LinearGradientBrush></Border.Background></Border>
+        <StackPanel VerticalAlignment="Bottom" Margin="52,0,52,16" Spacing="10">
+          <TextBlock x:Name="WatchStatus" Visibility="Collapsed" FontSize="14" Foreground="#99F2F2F7" TextTrimming="CharacterEllipsis" />
           <Grid ColumnSpacing="16">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <Slider x:Name="SeekSlider" Minimum="0" Maximum="1" ValueChanged="SeekSlider_ValueChanged" ThumbToolTipValueConverter="{StaticResource PlaybackTimeConverter}" AutomationProperties.Name="播放进度" VerticalAlignment="Center" />
+            <Grid>
+              <Canvas x:Name="SeekBufferTrack" Height="2" VerticalAlignment="Center" IsHitTestVisible="False" SizeChanged="SeekBufferTrack_SizeChanged" />
+              <Slider x:Name="SeekSlider" Minimum="0" Maximum="1" ValueChanged="SeekSlider_ValueChanged" ThumbToolTipValueConverter="{StaticResource PlaybackTimeConverter}" AutomationProperties.Name="播放进度" VerticalAlignment="Center" />
+            </Grid>
             <TextBlock x:Name="TimeLabel" Grid.Column="1" Text="0:00 / 0:00" FontSize="15" Foreground="#F2F2F7" VerticalAlignment="Center" />
           </Grid>
           <StackPanel x:Name="VolumeEditPanel" Visibility="Collapsed" Orientation="Horizontal" Spacing="12" HorizontalAlignment="Left">
@@ -164,26 +169,38 @@
               <Button x:Name="HidePlayerControlsButton" Content="&#xE70D;" FontFamily="Segoe MDL2 Assets" Click="HideControls_Click" CornerRadius="26" Padding="14,10" AutomationProperties.Name="隐藏播放控件" />
             </StackPanel>
           </Grid>
-          <TextBlock x:Name="PlayerInputHint" Text="左摇杆 / 方向键选择 · A 确认    B 返回    X 发弹幕    Y 搜索" FontSize="13" Foreground="#66F2F2F7" />
+          <TextBlock x:Name="PlayerInputHint" Text="左摇杆 / 方向键选择 · A 确认    B 返回    X 发弹幕    Y 搜索" FontSize="13" Foreground="#99F2F2F7" />
         </StackPanel>
       </Grid>
       </ContentControl>
       <Border x:Name="SubtitleLayer" IsHitTestVisible="False" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="32,0,32,100" Background="#BB000000" CornerRadius="8" Padding="16,8"><TextBlock x:Name="SubtitleText" TextWrapping="Wrap" TextAlignment="Center" FontSize="25" Foreground="White" MaxWidth="960" /></Border>
       <Grid x:Name="DrawerBackdrop" Background="#80000000" Visibility="Collapsed" Tapped="DrawerBackdrop_Tapped" />
-      <Grid x:Name="PausedRecommendationsPanel" Height="400" VerticalAlignment="Bottom" Background="#F50D0D10" Padding="26,16" Visibility="Collapsed">
-        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-        <Grid><TextBlock Text="相关推荐" Foreground="White" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" />
+      <Grid x:Name="PausedRecommendationsPanel" Height="324" VerticalAlignment="Bottom" Background="#F50D0D10" Padding="26,12" Visibility="Collapsed">
+        <Grid.Resources>
+          <ItemsPanelTemplate x:Key="PlaybackCardRow">
+            <ItemsWrapGrid Orientation="Vertical" MaximumRowsOrColumns="1" ItemWidth="224" ItemHeight="218" />
+          </ItemsPanelTemplate>
+        </Grid.Resources>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid><TextBlock x:Name="PausedPanelTitle" Text="相关推荐" Foreground="White" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" />
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
             <Button x:Name="PausedRecommendationRefresh" Content="刷新" Click="RefreshPausedRecommendations_Click" />
             <Button x:Name="PausedRecommendationClose" Content="返回视频" Click="ClosePausedRecommendations_Click" />
           </StackPanel>
         </Grid>
-        <TextBlock x:Name="PausedRecommendationNotice" Grid.Row="1" Text="左右选择 · A 播放 · B 返回" FontSize="14" Foreground="#99FFFFFF" Margin="0,8" TextWrapping="Wrap" />
-        <GridView x:Name="PausedRecommendationGrid" Grid.Row="2" SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedRecommendation_ItemClick" Padding="8,0,8,0"
-          ItemContainerStyle="{StaticResource TvCardItemStyle}" ItemTemplate="{StaticResource TvVideoCardTemplate}"
-          ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled">
-          <GridView.ItemsPanel><ItemsPanelTemplate><ItemsWrapGrid Orientation="Vertical" MaximumRowsOrColumns="1" ItemWidth="282" ItemHeight="270" /></ItemsPanelTemplate></GridView.ItemsPanel>
-        </GridView>
+        <TextBlock x:Name="PausedRecommendationNotice" Grid.Row="1" Text="左右选择 · A 播放 · B 返回" FontSize="14" Foreground="#99FFFFFF" Margin="0,4,0,0" TextWrapping="Wrap" />
+        <GridView x:Name="PausedCollectionGrid" Grid.Row="2" Height="218" Padding="8,0" Visibility="Collapsed"
+          SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedCollection_ItemClick" AutomationProperties.Name="合集选集"
+          ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
+          ItemContainerStyle="{StaticResource TvCardItemStyle}"
+          ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+          ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
+        <TextBlock x:Name="PausedRelatedTitle" Grid.Row="3" Text="相关推荐" Visibility="Collapsed" Foreground="White" FontSize="19" FontWeight="SemiBold" />
+        <GridView x:Name="PausedRecommendationGrid" Grid.Row="4" SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedRecommendation_ItemClick" Padding="8,0"
+          ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
+          ItemContainerStyle="{StaticResource TvCardItemStyle}"
+          ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+          ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
       </Grid>
       <controls:VideoInteractionView x:Name="InteractionSide" Width="480" HorizontalAlignment="Right" Visibility="Collapsed" />
       <!-- Settings drawer: dark glass panel -->
@@ -193,8 +210,9 @@
           <TextBlock Text="播放设置" FontSize="24" FontWeight="SemiBold" Foreground="#F2F2F7" VerticalAlignment="Center" />
           <Button x:Name="SettingsCloseButton" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" HorizontalAlignment="Right" Click="DrawerClose_Click" AutomationProperties.Name="关闭播放设置" />
         </Grid>
-        <ScrollViewer Grid.Row="1" VerticalScrollMode="Enabled" HorizontalScrollMode="Disabled">
+        <ScrollViewer x:Name="PlaybackSettingsScroll" Grid.Row="1" VerticalScrollMode="Enabled" HorizontalScrollMode="Disabled">
           <StackPanel Spacing="14">
+            <ContentControl x:Name="PlaybackDiagnosticHost" Visibility="Collapsed" IsTabStop="False" HorizontalContentAlignment="Stretch" />
             <TextBlock Text="画质" FontSize="19" FontWeight="SemiBold" Foreground="#F2F2F7" />
             <TextBlock x:Name="QualityHint" Text="正在读取此视频可用的画质…" TextWrapping="Wrap" Foreground="#99F2F2F7" FontSize="14" />
             <Button x:Name="QualityAccountButton" Content="扫码登录，查看高清权限" Click="Account_Click" HorizontalAlignment="Stretch" Style="{StaticResource TvRowButtonStyle}" />
@@ -206,9 +224,6 @@
             <TextBlock x:Name="PlaybackTransportHint" Text="正在连接…" TextWrapping="Wrap" Foreground="#99F2F2F7" FontSize="14" />
             <TextBlock Text="接收速度是当前视频的数据量，不是全设备测速。" TextWrapping="Wrap" Foreground="#66F2F2F7" FontSize="13" />
             <TextBlock Text="播放选项" FontSize="19" Foreground="White" /><StackPanel x:Name="ExperienceOptions" Spacing="8" />
-            <TextBlock Text="分 P" FontSize="19" FontWeight="SemiBold" Foreground="#F2F2F7" Margin="0,10,0,0" />
-            <ComboBox x:Name="PartSelector" DisplayMemberPath="Title" SelectionChanged="Part_SelectionChanged" PlaceholderText="选择分 P" HorizontalAlignment="Stretch" FontSize="16" AutomationProperties.Name="视频分集" />
-            <TextBlock x:Name="SinglePartHint" Text="此视频只有一个分 P" FontSize="15" Foreground="#66F2F2F7" />
           </StackPanel>
         </ScrollViewer>
       </Grid>
@@ -304,17 +319,16 @@
           <TextBlock Text="A 图片 / 互动 · ← / → 选择 · B 返回楼层 · X 回复" Foreground="#66F2F2F7" FontSize="13" />
         </StackPanel>
       </Grid>
-      <TextBox x:Name="DanmakuInput" Visibility="Collapsed" MaxLength="100" />
-      <Button x:Name="SendDanmakuButton" Visibility="Collapsed" Click="SendDanmaku_Click" />
     </Grid>
 
-    <Grid x:Name="Footer" Grid.Row="2" Margin="0,14,0,0">
+    <Grid x:Name="Footer" Grid.Row="2" Margin="0,8,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-      <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+      <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
         <TextBlock Text="A 确认" Foreground="#86D78E" FontSize="13" />
         <TextBlock Text="B 返回" Foreground="#F39399" FontSize="13" />
         <TextBlock Text="L / 方向键选择" Foreground="#8BBFF9" FontSize="13" />
         <TextBlock Text="Y 搜索" Foreground="#EAD184" FontSize="13" />
+        <TextBlock Text="LB+Y 账号" Foreground="#B7BECE" FontSize="13" />
         <TextBlock Text="LB+X 刷新" Foreground="#B7BECE" FontSize="13" />
         <TextBlock Text="LB / RB 分区" Foreground="#99F2F2F7" FontSize="13" />
         <TextBlock Text="R 滚动" Foreground="#99F2F2F7" FontSize="13" />
@@ -325,6 +339,19 @@
     </Grid>
     <controls:CreatorHubView x:Name="CreatorHub" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed" />
     <controls:AccountLibraryView x:Name="AccountLibrary" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed" />
+    <Grid x:Name="TvPanelLayer" Grid.Row="0" Grid.RowSpan="3" Background="#88000000" Visibility="Collapsed">
+      <Grid Width="440" HorizontalAlignment="Right" Background="#F00D0D10" Padding="28,32">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid Margin="0,0,0,22">
+          <TextBlock x:Name="TvPanelTitle" FontSize="24" FontWeight="SemiBold" Foreground="#F2F2F7" VerticalAlignment="Center" />
+          <Button x:Name="TvPanelCloseButton" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" HorizontalAlignment="Right"
+                  Click="TvPanelClose_Click" AutomationProperties.Name="关闭面板" />
+        </Grid>
+        <ScrollViewer x:Name="TvPanelScroll" Grid.Row="1" IsTabStop="False" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto">
+          <ContentControl x:Name="TvPanelContent" IsTabStop="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Top" />
+        </ScrollViewer>
+      </Grid>
+    </Grid>
     <!-- Gamepad focus outline: hidden by default; code positions and shows it. -->
     <Canvas x:Name="GamepadFocusLayer" Grid.Row="0" Grid.RowSpan="3" IsHitTestVisible="False">
       <Border x:Name="GamepadFocusOutline" Visibility="Collapsed" BorderBrush="#F2F2F7" BorderThickness="3" CornerRadius="20" Background="#1AF2F2F7" />

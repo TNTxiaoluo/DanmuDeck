@@ -21,7 +21,7 @@ namespace BiliXbox.Controls
             ResetManualScrollState();
             _pane = pane; ++_paneGeneration; WakeChrome();
             _drawer.Visibility = Visibility.Visible;
-            _drawerTitle.Text = pane == Pane.Chat ? "直播聊天" : pane == Pane.Quality ? "播放画质" : "直播礼物";
+            _drawerTitle.Text = pane == Pane.Chat ? "直播聊天" : pane == Pane.Quality ? "播放画质" : pane == Pane.DanmakuSettings ? "直播弹幕设置" : "直播礼物";
             _closeDrawer.Content = pane == Pane.GiftAmount || pane == Pane.GiftConfirm ? "返回" : "关闭";
             _messages.Visibility = _chatComposer.Visibility = pane == Pane.Chat ? Visibility.Visible : Visibility.Collapsed;
             _drawerBody.Visibility = pane == Pane.Chat ? Visibility.Collapsed : Visibility.Visible;
@@ -45,12 +45,14 @@ namespace BiliXbox.Controls
                 Row("重新加载直播", () => Run(() => ChangeQualityAsync(_playback?.QualityId ?? 10000)), "LiveReloadButton");
                 FocusFirstRow();
             }
+            else if (pane == Pane.DanmakuSettings) RenderLiveDanmakuSettings();
             else if (pane == Pane.Gifts) RenderGifts();
             else if (pane == Pane.GiftAmount) RenderGiftAmount();
             else if (pane == Pane.GiftConfirm) RenderGiftConfirm();
         }
         private void ClearRows()
         {
+            _liveSettingButtons.Clear();
             foreach (var child in _drawerBody.Children) if (child is Button button) _actions.Remove(button);
             _drawerBody.Children.Clear();
         }

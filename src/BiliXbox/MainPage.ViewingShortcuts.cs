@@ -8,7 +8,7 @@ namespace BiliXbox
 {
     public sealed partial class MainPage
     {
-        private bool _virtualLb, _rawLb, _lbChordUsed;
+        private bool _virtualLb, _rawLb, _lbChordUsed, _accountChordUsed;
         private readonly ShoulderChordState _viewingChord = new ShoulderChordState();
         private DateTimeOffset _lastViewingChord = DateTimeOffset.MinValue;
         private DateTimeOffset _lastRemoteSeek = DateTimeOffset.MinValue;
@@ -46,12 +46,22 @@ namespace BiliXbox
                     + "x" + bounds.Height.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
                     + " pixelScale=" + scale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
                     + " viewPixelsEstimate=" + Math.Round(bounds.Width * scale) + "x" + Math.Round(bounds.Height * scale)
-                    + " layoutUnits=1280x720 native4kUiVerified=false";
+                    + " layoutUnits=" + Math.Round(Root.ActualWidth) + "x" + Math.Round(Root.ActualHeight);
                 if (value == _lastUiDisplayDiagnostic) return;
                 _lastUiDisplayDiagnostic = value;
                 BiliXbox.Services.PlaybackDiagnosticsLog.Record(value);
             }
             catch (Exception) { /* Optional display telemetry must not block startup. */ }
+        }
+        private void PageViewport_SizeChanged(object sender, SizeChangedEventArgs args)
+        {
+            if (Root == null || args.NewSize.Width <= 0 || args.NewSize.Height <= 0) return;
+            // Use full-size XAML layout when the viewport can hold the TV
+            // controls. The Viewbox only scales smaller effective viewports.
+            double scale = Math.Max(1, Math.Min(args.NewSize.Width / 1280, args.NewSize.Height / 720));
+            Root.Width = Math.Round(1280 * scale);
+            Root.Height = Math.Round(720 * scale);
+            RecordUiDisplayDiagnostic();
         }
         private async void FilmGenre_Click(object sender, RoutedEventArgs args)
         {
@@ -87,11 +97,17 @@ namespace BiliXbox
             if (_disposed || _dialogOpen || _inputPaneVisible || IsNativeGamepadEditorActive) return false;
             if (key == VirtualKey.GamepadLeftShoulder)
             {
-                if (!repeat) { _virtualLb = true; _lbChordUsed = false; }
+                if (!repeat) { _virtualLb = true; if (!_rawLb) _lbChordUsed = _accountChordUsed = false; }
                 return true;
             }
             bool lb = _virtualLb || _rawLb;
             try { if (_activeGamepad != null) lb |= (_activeGamepad.GetCurrentReading().Buttons & GamepadButtons.LeftShoulder) != 0; } catch (Exception) { }
+            if (lb && key == VirtualKey.GamepadY)
+            {
+                _lbChordUsed = true;
+                if (!repeat) RunAccountChord();
+                return true;
+            }
             bool targetX = key == VirtualKey.GamepadX && IsCommentReplySurface;
             bool refreshX = key == VirtualKey.GamepadX && IsSectionBrowseSurface;
             if (!lb || (!refreshX && !targetX)) return false;
@@ -103,6 +119,7 @@ namespace BiliXbox
         {
             if (key != VirtualKey.GamepadLeftShoulder) return;
             _virtualLb = false;
+            if (!_rawLb) _accountChordUsed = false;
             if (!RawGamepadOwnsNavigation && !_lbChordUsed && !_dialogOpen && !_inputPaneVisible)
             { if (IsSectionBrowseSurface) StepHomeSection(-1); else SeekVideoShoulder(-1); }
         }
@@ -111,16 +128,30 @@ namespace BiliXbox
             bool lb = enabled && (reading.Buttons & GamepadButtons.LeftShoulder) != 0;
             bool x = (IsSectionBrowseSurface || IsCommentReplySurface) && (reading.Buttons & GamepadButtons.X) != 0;
             bool alreadyUsed = _lbChordUsed;
-            var action = _viewingChord.Sample(lb, x, enabled);
+            bool y = (reading.Buttons & GamepadButtons.Y) != 0;
+            var action = _viewingChord.Sample(lb, x || y, enabled);
             // A mapped X tap may occur entirely between raw polling frames.
             // Keep its consumed-LB latch until release, including when a remote
             // provides mapped keys while the raw device sampler is disabled.
             _lbChordUsed = _viewingChord.Consumed || (alreadyUsed && (_virtualLb || _rawLb || lb));
-            if (action == ShoulderAction.Refresh) { if (IsCommentReplySurface) RunTargetedCommentReply(); else RunViewingChord(true); }
+            if (action == ShoulderAction.Refresh)
+            {
+                if (y) RunAccountChord();
+                else if (IsCommentReplySurface) RunTargetedCommentReply();
+                else RunViewingChord(true);
+            }
             else if (action == ShoulderAction.Previous && !alreadyUsed) { if (IsSectionBrowseSurface) StepHomeSection(-1); else SeekVideoShoulder(-1); }
             _rawLb = lb;
-            if (!lb && !_virtualLb) _lbChordUsed = false;
+            if (!lb && !_virtualLb) _lbChordUsed = _accountChordUsed = false;
         }
+        private async void RunAccountChord()
+        {
+            if (_accountChordUsed || _disposed || _dialogOpen || _inputPaneVisible) return;
+            _accountChordUsed = true;
+            try { await OpenAccountAsync(); }
+            catch (Exception ex) { if (!_disposed) SetStatus("个人中心未能打开：" + Friendly(ex)); }
+        }
+
         private async void RunViewingChord(bool refresh)
         {
             var now = DateTimeOffset.UtcNow;

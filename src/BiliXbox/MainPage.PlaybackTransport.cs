@@ -14,10 +14,14 @@ namespace BiliXbox
     {
         private readonly PlaybackRecoveryState _playbackRecovery = new PlaybackRecoveryState();
         private readonly PlaybackPipelineRecoveryState _pipelineRecovery = new PlaybackPipelineRecoveryState();
+        private readonly PlaybackAccelerationHealthState _accelerationHealth = new PlaybackAccelerationHealthState();
+        private System.Threading.CancellationTokenSource _nativeAccelerationRecoveryWatch;
         private int _playbackRouteOffset;
         private bool _switchingPlaybackRoute;
         private double _bufferedPlaybackSeconds = -1;
+        private double _downloadBytesPerSecond = -1;
         private double _bufferSamplePosition;
+        private double? _lastBufferedWakePosition;
         private readonly PlaybackBufferingPolicy _bufferingPolicy = new PlaybackBufferingPolicy();
         private bool _bufferResumeInFlight;
         private int _bufferResumeRevision;
@@ -34,11 +38,17 @@ namespace BiliXbox
             (!string.IsNullOrEmpty(_playback.DashManifest) ? _adaptivePlayback?.HasAlternateRoutes == true
                 : Mp4PlaybackUrls(_playback).Count > 1);
 
+        private bool HasUntriedPlaybackRoute => _playback != null &&
+            (!string.IsNullOrEmpty(_playback.DashManifest) ? _adaptivePlayback?.HasUntriedRoute == true
+                : _playbackRouteOffset + 1 < Mp4PlaybackUrls(_playback).Count);
+
         private void ResetPlaybackTransportDisplay()
         {
             ResetPlaybackBuffering();
             _bufferedPlaybackSeconds = -1;
+            _downloadBytesPerSecond = -1;
             _bufferSamplePosition = 0;
+            SetSeekBufferRanges(null, 0);
             _nextTransportSample = DateTimeOffset.MinValue;
             _nextWaitingDiagnostic = DateTimeOffset.MinValue;
         }
@@ -47,7 +57,9 @@ namespace BiliXbox
         {
             ++_bufferResumeRevision;
             _bufferResumeInFlight = false;
+            _lastBufferedWakePosition = null;
             _bufferingPolicy.Reset();
+            _accelerationHealth.ResetWaiting();
         }
 
         private void InvalidatePlaybackBuffering()
@@ -55,9 +67,37 @@ namespace BiliXbox
             bool waiting = _bufferingPolicy.Waiting && _wantsPlayback;
             if (_bufferResumeInFlight) CancelDisplayPlayRequest();
             ResetPlaybackBuffering();
-            if (waiting) _bufferingPolicy.Rebuffer(_media.Source, _partGeneration);
+            if (waiting) _bufferingPolicy.Rebuffer(_media.Source, _partGeneration, resumeAfterSeek: true);
+            var now = DateTimeOffset.UtcNow;
+            _playbackRecovery.ResetWaiting(now);
+            _pipelineRecovery.ResetWaiting(now);
             _bufferedPlaybackSeconds = -1;
+            SetSeekBufferRanges(null, 0);
             _nextTransportSample = DateTimeOffset.MinValue;
+        }
+
+        private void ApplyRestorePosition()
+        {
+            // Duration and CanSeek can become available while DASH is still
+            // opening. Seeking then can interrupt the first video segment.
+            if (_sourceLoading || !_restorePosition.HasValue || _media.Source == null) return;
+            var session = _media.PlaybackSession;
+            if (!session.CanSeek || session.NaturalDuration <= TimeSpan.Zero) return;
+            var position = TimeSpan.FromSeconds(Math.Max(0, Math.Min(_restorePosition.Value.TotalSeconds, session.NaturalDuration.TotalSeconds)));
+            SeekToPosition(position);
+            RecordPlaybackTrack("restore-position-applied", _playback, " position=" + position.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture));
+        }
+
+        private void SeekToPosition(TimeSpan position)
+        {
+            if (_sourceLoading)
+            {
+                _restorePosition = position;
+                return;
+            }
+            _restorePosition = null;
+            InvalidatePlaybackBuffering();
+            _media.PlaybackSession.Position = position;
         }
 
         private void ResetPlaybackRecovery(bool recovery)
@@ -67,54 +107,91 @@ namespace BiliXbox
                 _playbackRecovery.ResetWaiting(DateTimeOffset.UtcNow);
                 _pipelineRecovery.ResetWaiting(DateTimeOffset.UtcNow);
             }
-            else { _playbackRouteOffset = 0; _playbackRecovery.Reset(); _pipelineRecovery.Reset(); }
+            else { _playbackRouteOffset = 0; _playbackRecovery.Reset(); _pipelineRecovery.Reset(); _indexCompatibilityAttempts.Clear(); }
         }
 
-        private void UpdatePlaybackTransport(bool waiting) => UpdatePlaybackTransport(waiting, DateTimeOffset.UtcNow);
+        private void UpdatePlaybackTransport(bool waiting, bool clockStalled = false)
+            => UpdatePlaybackTransport(waiting, DateTimeOffset.UtcNow, clockStalled);
 
-        private void UpdatePlaybackTransport(bool waiting, DateTimeOffset now)
+        private void UpdatePlaybackTransport(bool waiting, DateTimeOffset now, bool clockStalled = false)
         {
             var session = _media.PlaybackSession;
-            // GetBufferedRanges crosses the native media boundary. Read twice a
-            // second, not for every frame or every danmaku update.
-            if (now >= _nextTransportSample)
+            double required = _playback != null && _playback.VideoBitrate > 0
+                ? (_playback.VideoBitrate + (double)_playback.AudioBitrate) / 8 : 0;
+            // Check for refill completion frequently. Poll less often when
+            // the media clock is healthy.
+            var sampleInterval = TimeSpan.FromMilliseconds(waiting ? 125 : 500);
+            if (now >= _nextTransportSample || (waiting && _nextTransportSample - now > sampleInterval))
             {
-                _nextTransportSample = now.AddMilliseconds(500);
+                _nextTransportSample = now + sampleInterval;
+                _downloadBytesPerSecond = _adaptivePlayback?.CurrentDownloadBytesPerSecond
+                    ?? _activeDownloadSpeed?.CurrentDownloadBytesPerSecond ?? -1;
                 _bufferedPlaybackSeconds = -1;
+                PlaybackBufferRange[] ranges = null;
+                double duration = 0;
                 if (_media.Source != null)
                 {
                     try
                     {
                         var position = session.Position;
+                        duration = session.NaturalDuration.TotalSeconds;
+                        ranges = session.GetBufferedRanges().Select(range =>
+                            new PlaybackBufferRange(range.Start.TotalSeconds, range.End.TotalSeconds)).ToArray();
                         _bufferSamplePosition = position.TotalSeconds;
-                        _bufferedPlaybackSeconds = PlaybackBufferRanges.ContiguousSeconds(position.TotalSeconds,
-                            session.GetBufferedRanges().Select(range => new PlaybackBufferRange(range.Start.TotalSeconds, range.End.TotalSeconds)));
+                        _bufferedPlaybackSeconds = PlaybackBufferRanges.ContiguousSeconds(position.TotalSeconds, ranges);
                     }
                     catch (Exception) { _bufferedPlaybackSeconds = -1; }
                 }
-                var speed = DownloadSpeedMeter.Format(_adaptivePlayback?.CurrentDownloadBytesPerSecond
-                    ?? _activeDownloadSpeed?.CurrentDownloadBytesPerSecond ?? -1);
+                SetSeekBufferRanges(ranges, duration);
+                var speed = DownloadSpeedMeter.Format(_downloadBytesPerSecond);
                 var cache = _bufferedPlaybackSeconds < 0 ? "等待数据" : _bufferedPlaybackSeconds.ToString("0.0") + " 秒";
                 BufferingSpeed.Text = "接收：" + speed + " · 可播缓存：" + cache;
-                var required = _playback != null && _playback.VideoBitrate > 0
-                    ? "\n此画质平均需要约 " + DownloadSpeedMeter.Format((_playback.VideoBitrate + (double)_playback.AudioBitrate) / 8) : "";
-                PlaybackTransportHint.Text = "接收：" + speed + " · 可播缓存：" + cache + required;
+                PlaybackTransportHint.Text = "接收：" + speed + " · 可播缓存：" + cache
+                    + (required > 0 ? "\n此画质平均需要约 " + DownloadSpeedMeter.Format(required) : "");
             }
+            double received = _downloadBytesPerSecond;
             bool active = _watching && _wantsPlayback && _media.Source != null && !_switchingPlaybackRoute
                 && _partCts != null && !_partCts.IsCancellationRequested;
-            bool blocked = _seeking || _dialogOpen || _inputPaneVisible || _creatorVisible || _libraryVisible;
+            bool blocked = _seeking || _dialogOpen || _inputPaneVisible || _creatorVisible || _libraryVisible || _displaySuspended;
             if (active && waiting && now >= _nextWaitingDiagnostic)
             {
                 _nextWaitingDiagnostic = now.AddSeconds(10);
                 RecordPlaybackTrack("transport-wait", _playback,
                     " generation=" + _partGeneration + " sourceLoading=" + _sourceLoading
                     + " nativeState=" + session.PlaybackState + " displaySuspended=" + _displaySuspended
+                    + " refillPaused=" + _bufferingPolicy.PausedForBuffer + " resumeInFlight=" + _bufferResumeInFlight
                     + BufferDiagnostic(session.Position.TotalSeconds, _bufferedPlaybackSeconds)
+                    + ThroughputDiagnostic(received, required)
                     + " " + (_adaptivePlayback?.TransportDiagnostic ?? "transport=mp4")
                     + " routeAttempts=" + _playbackRecovery.Attempts + " pipelineAttempts=" + _pipelineRecovery.Attempts);
             }
+            bool pipelineBlocked = blocked;
             ApplyPlaybackBuffering(active && !_sourceLoading && !_displaySuspended, blocked);
             blocked = blocked || _bufferResumeInFlight;
+            if (active && !blocked && _adaptivePlayback?.IndexFailurePending == true)
+            {
+                _ = RecoverPlaybackIndexAsync();
+                return;
+            }
+            bool bodyFailed = _adaptivePlayback?.AccelerationBodyFailed == true;
+            bool accelerationStalled = _accelerationHealth.Observe(_media.Source, _partGeneration, now,
+                _adaptivePlayback?.AccelerationEnabled == true && _nativeAccelerationRecoveryWatch != _watchCts,
+                active, waiting, blocked, session.Position.TotalSeconds, _bufferedPlaybackSeconds, bodyFailed);
+            bool belowRequiredRate = received >= 0 && required > 0 && received < required * .5;
+            if (!(accelerationStalled && bodyFailed) && _playbackRecovery.ShouldSwitch(now, session.Position, active, waiting, blocked,
+                _bufferedPlaybackSeconds, HasUntriedPlaybackRoute, received > 0, belowRequiredRate))
+            {
+                string slowRefill = belowRequiredRate && received > 0 ? ThroughputDiagnostic(received, required) : null;
+                _ = RecoverPlaybackAsync(slowRefill: slowRefill);
+                return;
+            }
+            if (accelerationStalled)
+            {
+                _ = RecoverAccelerationNativelyAsync();
+                return;
+            }
+            if (clockStalled && active && !blocked && !_sourceLoading && !_sessionBuffering
+                && !_bufferingPolicy.Waiting && TryWakeBufferedPlayback()) return;
             // A frozen clock with ample playable data is distinct from network
             // starvation. Rebuild the native source once at the same quality
             // and position; do not rotate CDN addresses for this condition.
@@ -122,20 +199,43 @@ namespace BiliXbox
             // advances at slideshow speed. Observe native Playing as well; the
             // policy measures elapsed media time and leaves normal playback alone.
             bool observeClock = waiting || session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Playing;
-            // A clock deliberately paused below the three-second refill target
-            // is not a stuck decoder. Once a resume was requested, native stalls
-            // remain eligible for the existing bounded pipeline recovery.
+            // A deliberate refill pause blocks clock recovery. A pending Play
+            // request must not also block it: native resume can stall after the
+            // contiguous buffer has already filled.
+            bool stillRefilling = belowRequiredRate && waiting && _bufferedPlaybackSeconds >= 0
+                && _bufferedPlaybackSeconds < 3;
             if (_pipelineRecovery.ShouldRestart(now, session.Position, active && !_sourceLoading,
-                observeClock, blocked || _bufferingPolicy.PausedForBuffer, _bufferedPlaybackSeconds))
+                observeClock, pipelineBlocked || _bufferingPolicy.PausedForBuffer || stillRefilling, _bufferedPlaybackSeconds))
             {
                 _ = RecoverPlaybackAsync(true);
                 return;
             }
-            if (_playbackRecovery.ShouldSwitch(now, session.Position,
-                active, waiting, blocked,
-                _bufferedPlaybackSeconds, HasAlternatePlaybackRoutes,
-                (_adaptivePlayback?.CurrentDownloadBytesPerSecond ?? _activeDownloadSpeed?.CurrentDownloadBytesPerSecond ?? 0) > 0))
-                _ = RecoverPlaybackAsync();
+        }
+
+        private bool TryWakeBufferedPlayback()
+        {
+            var session = _media.PlaybackSession;
+            double position = session.Position.TotalSeconds;
+            double buffered = _bufferedPlaybackSeconds - Math.Max(0, position - _bufferSamplePosition);
+            if (session.PlaybackState != Windows.Media.Playback.MediaPlaybackState.Playing
+                || position < _bufferSamplePosition || buffered < PlaybackBufferingPolicy.RefillTargetSeconds
+                || (_lastBufferedWakePosition.HasValue && position <= _lastBufferedWakePosition.Value + 1)) return false;
+
+            _lastBufferedWakePosition = position;
+            try
+            {
+                _media.Pause();
+                _media.Play();
+                RecordPlaybackTrack("buffered-clock-wake", _playback, BufferDiagnostic(position, buffered));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                RecordPlaybackTrack("buffered-clock-wake-failed", _playback, " hresult=" + ex.HResult.ToString("X8"));
+                if (session.PlaybackState == Windows.Media.Playback.MediaPlaybackState.Paused)
+                    _bufferingPolicy.Rebuffer(_media.Source, _partGeneration);
+                return false;
+            }
         }
 
         private void ApplyPlaybackBuffering(bool active, bool blocked)
@@ -168,6 +268,10 @@ namespace BiliXbox
         private static string BufferDiagnostic(double position, double buffered)
             => " position=" + position.ToString("0.###", CultureInfo.InvariantCulture)
                 + " playableSeconds=" + buffered.ToString("0.###", CultureInfo.InvariantCulture);
+
+        private static string ThroughputDiagnostic(double received, double required)
+            => " receiveBps=" + received.ToString("0", CultureInfo.InvariantCulture)
+                + " requiredBps=" + required.ToString("0", CultureInfo.InvariantCulture);
 
         private async Task ResumeBufferedPlaybackAsync()
         {
@@ -219,7 +323,7 @@ namespace BiliXbox
             }
         }
 
-        private async Task RecoverPlaybackAsync(bool restartPipeline = false)
+        private async Task RecoverPlaybackAsync(bool restartPipeline = false, string slowRefill = null)
         {
             if (_switchingPlaybackRoute || !_watching || _disposed || _video == null || _partCts == null
                 || !_wantsPlayback || _playback == null || _partCts.IsCancellationRequested
@@ -228,13 +332,19 @@ namespace BiliXbox
             var watch = _watchCts;
             var part = _partCts;
             _switchingPlaybackRoute = true;
+            bool useNative = restartPipeline && _adaptivePlayback?.AccelerationEnabled == true;
+            if (useNative) _nativeAccelerationRecoveryWatch = watch;
             if (!restartPipeline)
                 _playbackRouteOffset = _adaptivePlayback?.NextRouteOffset ?? (_playbackRouteOffset + 1);
             try
             {
-                SetStatus((restartPipeline ? "正在恢复播放 · " : "正在重新缓冲 · ") + playback.Quality);
+                SetStatus((restartPipeline ? "正在恢复播放 · " : slowRefill != null
+                    ? "当前线路补缓冲过慢，正在切换备用线路 · " : "正在重新缓冲 · ") + playback.Quality);
                 RecordPlaybackTrack(restartPipeline ? "pipeline-recovery" : "route-recovery", playback,
                     BufferDiagnostic(_media.PlaybackSession.Position.TotalSeconds, _bufferedPlaybackSeconds)
+                    + (slowRefill == null ? "" : " reason=slow-refill" + slowRefill)
+                    + " routeOffset=" + _playbackRouteOffset
+                    + " resumeInFlight=" + _bufferResumeInFlight + " useNative=" + useNative
                     + " pipelineAttempts=" + _pipelineRecovery.Attempts + " routeAttempts=" + _playbackRecovery.Attempts);
                 // Reuse this response's real audio/video alternatives. Fetching
                 // a different quality or inventing CDN hostnames changes content.
@@ -251,6 +361,32 @@ namespace BiliXbox
                 _switchingPlaybackRoute = false;
                 _nextTransportSample = DateTimeOffset.MinValue;
             }
+        }
+
+        private async Task RecoverAccelerationNativelyAsync()
+        {
+            if (_switchingPlaybackRoute || _disposed || !_watching || !_wantsPlayback || _playback == null
+                || _video == null || _watchCts == null || _partCts == null || _partCts.IsCancellationRequested
+                || _nativeAccelerationRecoveryWatch == _watchCts) return;
+            var playback = _playback;
+            _nativeAccelerationRecoveryWatch = _watchCts;
+            _switchingPlaybackRoute = true;
+            try
+            {
+                // DownloadFailed may already have selected a backup internally.
+                // Recreating the filter must retain it rather than restore the
+                // page's earlier route offset and retry the failed primary.
+                _playbackRouteOffset = _adaptivePlayback?.SelectedRouteOffset ?? _playbackRouteOffset;
+                playback.QualityNotice = "正在使用原生下载恢复 · " + playback.Quality;
+                RecordPlaybackTrack("acceleration-native-recovery", playback,
+                    BufferDiagnostic(_media.PlaybackSession.Position.TotalSeconds, _bufferedPlaybackSeconds)
+                    + " routeOffset=" + _playbackRouteOffset
+                    + " bodyFailed=" + (_adaptivePlayback?.AccelerationBodyFailed == true));
+                await LoadPartAsync(_currentCid, playback.QualityId, true, playback, true);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { if (!_disposed) SetStatus("原生线路暂时未能恢复：" + Friendly(ex)); }
+            finally { _switchingPlaybackRoute = false; }
         }
     }
 }

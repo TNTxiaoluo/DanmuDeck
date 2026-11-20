@@ -29,6 +29,8 @@ namespace Windows.UI.Xaml.Automation
 }
 namespace BiliXbox.Controls
 {
+    public sealed partial class LiveHubView
+    { private void RecordLive(string phase, Exception error = null) { } }
     public sealed class LiveTestLabel { internal string Text = "", HelpText = ""; }
     public sealed partial class LiveHubView
     {

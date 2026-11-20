@@ -22,6 +22,7 @@ internal static class DashRuntime
         {
             // Error text and request URLs may include expiring signed CDN tokens.
             Console.Error.WriteLine("FAIL: runtime {0}, HRESULT 0x{1:X8}", error.GetType().Name, error.HResult);
+            if (error.Message.StartsWith("无法加载 DASH 音视频清单（", StringComparison.Ordinal)) Console.Error.WriteLine(error.Message);
             return 1;
         }
     }
@@ -31,10 +32,19 @@ internal static class DashRuntime
         if (args.Length < 1) throw new ArgumentException("A local MPD path is required.");
         byte[] bytes = File.ReadAllBytes(args[0]);
         int timeoutSeconds = args.Length > 1 ? int.Parse(args[1]) : 30;
-        bool decode = args.Length > 2 && args[2] == "decode";
+        bool decode = args.Contains("decode"), compatibility = args.Contains("compat");
         var xml = XDocument.Parse(System.Text.Encoding.UTF8.GetString(bytes));
         var ns = xml.Root.Name.Namespace;
         var representations = xml.Descendants(ns + "Representation").ToArray();
+        if (compatibility)
+        {
+            var video = xml.Descendants(ns + "AdaptationSet").Where(a => (string)a.Attribute("contentType") == "video")
+                .Descendants(ns + "BaseURL").Select(a => a.Value).ToArray();
+            var audio = xml.Descendants(ns + "AdaptationSet").Where(a => (string)a.Attribute("contentType") == "audio")
+                .Descendants(ns + "BaseURL").Select(a => a.Value).ToArray();
+            xml = XDocument.Parse(await DashIndexCompatibility.ConvertAsync(xml.ToString(), video, audio, 0,
+                CancellationToken.None, Console.WriteLine));
+        }
         await DashTransportRuntime.Run().ConfigureAwait(false);
         Console.WriteLine("Manifest: {0} representations; maximum video height {1}.", representations.Length,
             representations.Select(item => (int?)item.Attribute("height") ?? 0).DefaultIfEmpty().Max());
@@ -59,7 +69,7 @@ internal static class DashRuntime
                 else if (kind == "audio") audioRoutes = new[] { baseUrl.Value, actual };
             }
             var creationTask = AdaptivePlaybackSource.OpenAsync(xml.ToString(SaveOptions.DisableFormatting), videoRoutes,
-                audioRoutes, new DownloadSpeedMeter(), 1, cancellation.Token);
+                audioRoutes, new DownloadSpeedMeter(), 1, cancellation.Token, args.Contains("accelerated"));
             if (await Task.WhenAny(creationTask, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds))).ConfigureAwait(false) != creationTask)
                 throw new TimeoutException("AdaptiveMediaSource manifest creation timed out.");
             using (var owner = await creationTask.ConfigureAwait(false))
@@ -91,7 +101,7 @@ internal static class DashRuntime
                         opened.TrySetResult(false);
                     };
                     player.Source = owner.Source;
-                    player.Play();
+                    if (!compatibility) player.Play();
                     if (await Task.WhenAny(opened.Task, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds))).ConfigureAwait(false) != opened.Task)
                     {
                         Console.Error.WriteLine("MediaOpened timed out; requests {0}, failed {1}.", downloads, failures);
@@ -103,14 +113,18 @@ internal static class DashRuntime
                         return 4;
                     }
                     var session = player.PlaybackSession;
+                    if (compatibility) { session.Position = TimeSpan.FromSeconds(12); player.Play(); }
                     Console.WriteLine("MediaOpened: duration {0:F2} seconds, video {1}x{2}.",
                         session.NaturalDuration.TotalSeconds, session.NaturalVideoWidth, session.NaturalVideoHeight);
-                    await Task.Delay(2200).ConfigureAwait(false);
+                    await Task.Delay(compatibility ? 6500 : 2200).ConfigureAwait(false);
                     Console.WriteLine("Playback: {0}; position {1:F2} seconds; requests {2}; failures {3}.",
                         session.PlaybackState, session.Position.TotalSeconds, downloads, failures);
+                    Console.WriteLine("Reported dimensions after playback starts: {0}x{1}.",
+                        session.NaturalVideoWidth, session.NaturalVideoHeight);
                     Console.WriteLine("Native completed media body bytes: {0}; current native throughput {1:F2} KB/s.",
                         owner.TotalDownloadedBytes, Math.Max(0, owner.CurrentDownloadBytesPerSecond) / 1024);
-                    bool advancing = session.Position.TotalSeconds > 0.3;
+                    Console.WriteLine(owner.TransportDiagnostic);
+                    bool advancing = session.Position.TotalSeconds > (compatibility ? 12.3 : 0.3);
                     bool counted = owner.TotalDownloadedBytes > 0;
                     bool routed = rewrites == downloads && ranged > 0;
                     Console.WriteLine("Backup rewrite: {0}/{1} requests; {2} native byte ranges; buffered ranges {3}.",

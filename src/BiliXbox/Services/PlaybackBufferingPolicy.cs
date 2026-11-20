@@ -20,8 +20,7 @@ namespace BiliXbox.Services
         {
             if (!Finite(position) || position < 0 || ranges == null) return -1;
             double end = position;
-            foreach (var range in ranges.Where(value => Finite(value.Start) && Finite(value.End)
-                && value.Start >= 0 && value.End > value.Start).OrderBy(value => value.Start))
+            foreach (var range in ranges.Where(Valid).OrderBy(value => value.Start))
             {
                 if (range.End <= end) continue;
                 if (range.Start > end + .001) break;
@@ -29,6 +28,16 @@ namespace BiliXbox.Services
             }
             return Math.Max(0, end - position);
         }
+        internal static IReadOnlyList<PlaybackBufferRange> TimelineFractions(double duration, IEnumerable<PlaybackBufferRange> ranges)
+        {
+            if (!Finite(duration) || duration <= 0 || ranges == null) return Array.Empty<PlaybackBufferRange>();
+            double axisLength = Math.Max(1, duration);
+            return ranges.Where(range => Valid(range) && range.Start < duration)
+                .Select(range => new PlaybackBufferRange(range.Start / axisLength, Math.Min(duration, range.End) / axisLength))
+                .ToArray();
+        }
+        private static bool Valid(PlaybackBufferRange range)
+            => Finite(range.Start) && Finite(range.End) && range.Start >= 0 && range.End > range.Start;
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
@@ -37,9 +46,10 @@ namespace BiliXbox.Services
     // first startup. Only later starvation episodes pause below that target.
     internal sealed class PlaybackBufferingPolicy
     {
+        internal const double RefillTargetSeconds = 3;
         private object _source;
         private int _generation;
-        private bool _played, _waiting, _resumeRequested;
+        private bool _played, _waiting, _resumeRequested, _resumeAfterSeek;
         internal bool Waiting => _waiting || _resumeRequested;
         // Only this state owns a deliberate engine Pause. A requested resume
         // can still hang inside the native decoder and must remain recoverable.
@@ -53,11 +63,18 @@ namespace BiliXbox.Services
                 Reset(); _source = source; _generation = generation;
             }
             if (source == null || !active || !wantsPlayback)
-            { _waiting = _resumeRequested = false; return PlaybackBufferAction.None; }
+            { _waiting = _resumeRequested = _resumeAfterSeek = false; return PlaybackBufferAction.None; }
             if (nativePlaying && !_waiting)
             { _played = true; _resumeRequested = false; }
             if (blocked) return PlaybackBufferAction.None;
             if (_resumeRequested) return PlaybackBufferAction.None;
+            if (_resumeAfterSeek)
+            {
+                _resumeAfterSeek = _waiting = false;
+                // The app's pause belongs to the previous position. Give
+                // native Play a chance to request data at the new position.
+                if (!nativePlaying) return RequestResume();
+            }
             if (_waiting)
             {
                 // A failed native range query must not leave an app-paused
@@ -82,7 +99,7 @@ namespace BiliXbox.Services
 
         private static bool Ready(double position, double duration, double buffered)
         {
-            double target = 3;
+            double target = RefillTargetSeconds;
             if (!double.IsNaN(duration) && !double.IsInfinity(duration) && duration > 0
                 && !double.IsNaN(position) && !double.IsInfinity(position) && position >= 0)
             {
@@ -96,12 +113,14 @@ namespace BiliXbox.Services
         }
 
         internal void Reset()
-        { _source = null; _generation = 0; _played = _waiting = _resumeRequested = false; }
+        { _source = null; _generation = 0; _played = _waiting = _resumeRequested = _resumeAfterSeek = false; }
 
-        internal void Rebuffer(object source, int generation)
+        internal void Rebuffer(object source, int generation, bool resumeAfterSeek = false)
         {
             Reset(); _source = source; _generation = generation;
-            _played = _waiting = source != null;
+            _waiting = source != null;
+            _played = _waiting && !resumeAfterSeek;
+            _resumeAfterSeek = _waiting && resumeAfterSeek;
         }
     }
 }

@@ -72,6 +72,7 @@ namespace BiliXbox.Services
         public bool CanWrite { get { return false; } }
         public double CurrentDownloadBytesPerSecond { get { return _downloadSpeed.CurrentDownloadBytesPerSecond; } }
         internal long TotalDownloadedBytes { get { return _downloadSpeed.TotalDownloadedBytes; } }
+        internal (TimeSpan? Duration, int Status, string Host) LastMediaRequest => _blocks.LastMediaRequest;
 
         public ulong Size
         {
@@ -265,6 +266,7 @@ namespace BiliXbox.Services
             private int _references;
             private bool _disposed;
             private ulong _size;
+            private (TimeSpan? Duration, int Status, string Host) _lastMediaRequest;
 
             internal BlockCache(Uri uri, DownloadSpeedMeter meter)
             {
@@ -279,6 +281,8 @@ namespace BiliXbox.Services
             }
 
             internal ulong Size { get { lock (_gate) return _size; } }
+            internal (TimeSpan? Duration, int Status, string Host) LastMediaRequest
+            { get { lock (_gate) return _lastMediaRequest; } }
 
             internal void AddReference()
             {
@@ -386,12 +390,25 @@ namespace BiliXbox.Services
 
             private async Task<CachedBlock> FetchBlockAsync(ulong start, CancellationToken token)
             {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                int status = 0;
+                try { return await FetchRangeAsync(start, token, value => status = value).ConfigureAwait(false); }
+                finally
+                {
+                    if (!token.IsCancellationRequested)
+                        lock (_gate) _lastMediaRequest = (clock.Elapsed, status, _uri.DnsSafeHost);
+                }
+            }
+
+            private async Task<CachedBlock> FetchRangeAsync(ulong start, CancellationToken token, Action<int> recordStatus)
+            {
                 ulong end = checked(start + BlockSize - 1);
                 using (var request = new HttpRequestMessage(HttpMethod.Get, _uri))
                 {
                     request.Headers.TryAppendWithoutValidation("Range", "bytes=" + start + "-" + end);
                     using (var response = await _http.SendRequestAsync(request, HttpCompletionOption.ResponseHeadersRead).AsTask(token).ConfigureAwait(false))
                     {
+                        recordStatus((int)response.StatusCode);
                         response.EnsureSuccessStatusCode();
                         var headers = response.Content.Headers;
                         ulong total, expected;

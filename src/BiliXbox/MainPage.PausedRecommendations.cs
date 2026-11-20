@@ -19,22 +19,53 @@ namespace BiliXbox
         private CancellationTokenSource _pausedRecommendationsCts;
         private string _pausedRecommendationsBvid;
         private long _pausedRecommendationsAccount = -1;
-        private int _pausedRecommendationIndex = -1, _pausedRecommendationFocus;
+        private int _pausedRecommendationIndex = -1, _pausedCollectionIndex = -1, _pausedRecommendationFocus;
+        private GridView _pausedFocusGrid;
 
         private bool CanOpenPausedRecommendations => !_disposed && _watching && !_creatorVisible && !_libraryVisible && !_liveVisible
-            && !_wantsPlayback && !_sourceLoading && _media.Source != null && _video != null
+            && !_sourceLoading && _media.Source != null && _video != null
+            && (!_wantsPlayback || CurrentCollectionIndex() >= 0)
             && !_dialogOpen && !_inputPaneVisible && _playerUi.Drawer == PlayerDrawer.None;
+
+        private int CurrentCollectionIndex()
+        {
+            var collection = _video?.CollectionEpisodes;
+            if (collection == null) return -1;
+            for (int index = 0; index < collection.Count; ++index)
+                if (collection[index].Bvid == _video.Bvid) return index;
+            return -1;
+        }
+
+        private int PreparePausedCollection()
+        {
+            int index = CurrentCollectionIndex();
+            bool hasCollection = index >= 0;
+            PausedCollectionGrid.Items.Clear();
+            if (hasCollection)
+                foreach (var episode in _video.CollectionEpisodes) PausedCollectionGrid.Items.Add(episode);
+            PausedCollectionGrid.Visibility = PausedRelatedTitle.Visibility = hasCollection ? Visibility.Visible : Visibility.Collapsed;
+            PausedRecommendationsPanel.Height = hasCollection ? 564 : 324;
+            PausedPanelTitle.Text = hasCollection
+                ? "合集 · 当前第 " + (index + 1) + " / " + _video.CollectionEpisodes.Count + " 集" : "相关推荐";
+            return index;
+        }
 
         private async Task OpenPausedRecommendationsAsync(bool refresh = false)
         {
             if (!CanOpenPausedRecommendations) return;
+            int initialCollectionIndex = _pausedRecommendationsVisible ? -1 : PreparePausedCollection();
+            bool hasCollection = PausedCollectionGrid.Visibility == Visibility.Visible;
             _adjustingVolume = false;
             _pausedRecommendationsVisible = true;
             PausedRecommendationsPanel.Visibility = Visibility.Visible;
             ApplyPlayerUi();
             if (!refresh && _pausedRecommendationsBvid == _video.Bvid && _pausedRecommendationsAccount == CurrentAccountMid
                 && PausedRecommendationGrid.Items.Count > 0)
-            { FocusPausedRecommendation(Math.Max(0, _pausedRecommendationIndex)); return; }
+            {
+                if (initialCollectionIndex >= 0) FocusPausedCollection(initialCollectionIndex);
+                else if (!hasCollection) FocusPausedRecommendation(Math.Max(0, _pausedRecommendationIndex));
+                return;
+            }
             if (_pausedRecommendationsLoading) return;
             Cancel(ref _pausedRecommendationsCts);
             var watch = _watchCts; string bvid = _video.Bvid; long account = CurrentAccountMid;
@@ -44,7 +75,8 @@ namespace BiliXbox
             PausedRecommendationGrid.Items.Clear();
             PausedRecommendationNotice.Text = "正在加载与当前视频相关的推荐…";
             PausedRecommendationRefresh.IsEnabled = false;
-            PausedRecommendationClose.Focus(FocusState.Keyboard);
+            if (initialCollectionIndex >= 0) FocusPausedCollection(initialCollectionIndex);
+            else if (!hasCollection) PausedRecommendationClose.Focus(FocusState.Keyboard);
             try
             {
                 var videos = await _api.GetRelatedVideosAsync(bvid, owner.Token);
@@ -52,14 +84,19 @@ namespace BiliXbox
                     || watch != _watchCts || bvid != _video?.Bvid || account != CurrentAccountMid || !CanOpenPausedRecommendations) return;
                 foreach (var item in videos) PausedRecommendationGrid.Items.Add(item);
                 _pausedRecommendationsBvid = bvid; _pausedRecommendationsAccount = account;
-                PausedRecommendationNotice.Text = videos.Count == 0 ? "这个视频暂时没有相关推荐，可刷新重试。" : "左右选择 · A 播放 · ↓ 刷新 / 返回按钮 · ↑ 或 B 收起";
-                if (videos.Count > 0) FocusPausedRecommendation(0);
+                PausedRecommendationNotice.Text = videos.Count == 0 ? "这个视频暂时没有相关推荐，可刷新重试。"
+                    : hasCollection ? "左右选择 · A 播放 · ↓ 相关推荐 · ↑ 合集 · B 收起"
+                    : "左右选择 · A 播放 · ↓ 刷新 / 返回按钮 · ↑ 或 B 收起";
+                if (videos.Count > 0 && !hasCollection) FocusPausedRecommendation(0);
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 if (owner == _pausedRecommendationsCts && _pausedRecommendationsVisible && !owner.IsCancellationRequested)
-                { PausedRecommendationNotice.Text = "相关推荐加载失败：" + Friendly(ex); PausedRecommendationRefresh.Focus(FocusState.Keyboard); }
+                {
+                    PausedRecommendationNotice.Text = "相关推荐加载失败：" + Friendly(ex);
+                    if (!hasCollection) PausedRecommendationClose.Focus(FocusState.Keyboard);
+                }
             }
             finally
             {
@@ -74,6 +111,9 @@ namespace BiliXbox
             ++_pausedRecommendationFocus;
             Cancel(ref _pausedRecommendationsCts);
             PausedRecommendationsPanel.Visibility = Visibility.Collapsed;
+            PausedCollectionGrid.Items.Clear();
+            _pausedFocusGrid = null;
+            _pausedCollectionIndex = -1;
             PausedRecommendationRefresh.IsEnabled = true;
             if (clear) { _pausedRecommendationsBvid = null; _pausedRecommendationsAccount = -1; _pausedRecommendationIndex = -1; PausedRecommendationGrid.Items.Clear(); }
             if (!wasVisible) return;
@@ -87,6 +127,23 @@ namespace BiliXbox
         { if (!IgnorePlayerClick()) ClosePausedRecommendations(); }
         private async void PausedRecommendation_ItemClick(object sender, ItemClickEventArgs args)
         { if (!IgnorePlayerClick() && args.ClickedItem is VideoItem item) await OpenPausedRecommendationVideoAsync(item); }
+        private async void PausedCollection_ItemClick(object sender, ItemClickEventArgs args)
+        { if (!IgnorePlayerClick() && args.ClickedItem is CollectionEpisode item) await OpenPausedCollectionEpisodeAsync(item); }
+
+        private async Task OpenPausedCollectionEpisodeAsync(CollectionEpisode episode)
+        {
+            var collection = _video?.CollectionEpisodes;
+            if (!_pausedRecommendationsVisible || !CanOpenPausedRecommendations || collection == null
+                || episode == null || !collection.Contains(episode)) return;
+            if (episode.Bvid == _video.Bvid)
+            {
+                ClosePausedRecommendations();
+                if (!_wantsPlayback) PlayPause_Click(PlayPauseButton, new RoutedEventArgs());
+                return;
+            }
+            ClosePausedRecommendations(false, true);
+            await PlayCollectionEpisodeAsync(episode, collection);
+        }
 
         private async Task OpenPausedRecommendationVideoAsync(VideoItem item)
         {
@@ -103,17 +160,37 @@ namespace BiliXbox
             PlayerDirection direction;
             if (PlayerDirectionKey(key, out direction))
             {
-                if (direction == PlayerDirection.Up) { ClosePausedRecommendations(); return true; }
+                bool vertical = direction == PlayerDirection.Up || direction == PlayerDirection.Down;
+                if (vertical && repeat) return true;
+                bool hasCollection = PausedCollectionGrid.Items.Count > 0;
+                bool collectionFocused = _pausedFocusGrid == PausedCollectionGrid;
                 var current = FocusManager.GetFocusedElement() as Control;
-                bool toolbar = current == PausedRecommendationRefresh || current == PausedRecommendationClose;
-                if (toolbar && (direction == PlayerDirection.Left || direction == PlayerDirection.Right))
-                { ++_pausedRecommendationFocus; (direction == PlayerDirection.Left && PausedRecommendationRefresh.IsEnabled ? PausedRecommendationRefresh : PausedRecommendationClose).Focus(FocusState.Keyboard); return true; }
-                int count = PausedRecommendationGrid.Items.Count;
-                if (count == 0) { ++_pausedRecommendationFocus; (PausedRecommendationRefresh.IsEnabled ? PausedRecommendationRefresh : PausedRecommendationClose).Focus(FocusState.Keyboard); return true; }
-                if (direction == PlayerDirection.Down && !toolbar)
-                { ++_pausedRecommendationFocus; (PausedRecommendationRefresh.IsEnabled ? PausedRecommendationRefresh : PausedRecommendationClose).Focus(FocusState.Keyboard); return true; }
-                int next = _pausedRecommendationIndex < 0 ? 0 : _pausedRecommendationIndex + (direction == PlayerDirection.Left ? -1 : direction == PlayerDirection.Right ? 1 : 0);
-                FocusPausedRecommendation(Math.Max(0, Math.Min(count - 1, next))); return true;
+                bool toolbar = _pausedFocusGrid == null && (current == PausedRecommendationRefresh || current == PausedRecommendationClose);
+                int relatedCount = PausedRecommendationGrid.Items.Count;
+                if (direction == PlayerDirection.Up)
+                {
+                    if (hasCollection && !collectionFocused && !toolbar) FocusPausedCollection(Math.Max(0, _pausedCollectionIndex));
+                    else ClosePausedRecommendations();
+                }
+                else if (direction == PlayerDirection.Down)
+                {
+                    if ((collectionFocused || toolbar) && relatedCount > 0) FocusPausedRecommendation(Math.Max(0, _pausedRecommendationIndex));
+                    else if (hasCollection && toolbar) FocusPausedCollection(Math.Max(0, _pausedCollectionIndex));
+                    else FocusPausedToolbar(true);
+                }
+                else if (toolbar) FocusPausedToolbar(direction == PlayerDirection.Left);
+                else if (collectionFocused)
+                {
+                    int next = _pausedCollectionIndex + (direction == PlayerDirection.Left ? -1 : 1);
+                    FocusPausedCollection(Math.Max(0, Math.Min(PausedCollectionGrid.Items.Count - 1, next)));
+                }
+                else if (relatedCount > 0)
+                {
+                    int next = _pausedRecommendationIndex < 0 ? 0 : _pausedRecommendationIndex + (direction == PlayerDirection.Left ? -1 : 1);
+                    FocusPausedRecommendation(Math.Max(0, Math.Min(relatedCount - 1, next)));
+                }
+                else FocusPausedToolbar(true);
+                return true;
             }
             if (!PlayerConfirmKey(key)) return false;
             if (!_playerInput.ConfirmKeyDown(DateTimeOffset.UtcNow, repeat)) return true;
@@ -121,28 +198,48 @@ namespace BiliXbox
             try
             {
                 var focused = FocusManager.GetFocusedElement() as Control;
-                if (focused == PausedRecommendationClose) ClosePausedRecommendations();
-                else if (focused == PausedRecommendationRefresh && PausedRecommendationRefresh.IsEnabled) _ = OpenPausedRecommendationsAsync(true);
-                else if (_pausedRecommendationIndex >= 0 && _pausedRecommendationIndex < PausedRecommendationGrid.Items.Count)
+                if (_pausedFocusGrid == null)
+                {
+                    if (focused == PausedRecommendationClose) ClosePausedRecommendations();
+                    else if (focused == PausedRecommendationRefresh && PausedRecommendationRefresh.IsEnabled)
+                        _ = OpenPausedRecommendationsAsync(true);
+                }
+                else if (_pausedFocusGrid == PausedCollectionGrid && _pausedCollectionIndex >= 0 && _pausedCollectionIndex < PausedCollectionGrid.Items.Count)
+                    _ = OpenPausedCollectionEpisodeAsync(PausedCollectionGrid.Items[_pausedCollectionIndex] as CollectionEpisode);
+                else if (_pausedFocusGrid == PausedRecommendationGrid && _pausedRecommendationIndex >= 0
+                    && _pausedRecommendationIndex < PausedRecommendationGrid.Items.Count)
                     _ = OpenPausedRecommendationVideoAsync(PausedRecommendationGrid.Items[_pausedRecommendationIndex] as VideoItem);
             }
             finally { _dispatchingPlayerAction = false; }
             return true;
         }
-        private async void FocusPausedRecommendation(int index)
+        private void FocusPausedToolbar(bool preferRefresh)
         {
-            if (!_pausedRecommendationsVisible || index < 0 || index >= PausedRecommendationGrid.Items.Count) return;
+            ++_pausedRecommendationFocus;
+            _pausedFocusGrid = null;
+            (preferRefresh && PausedRecommendationRefresh.IsEnabled ? PausedRecommendationRefresh : PausedRecommendationClose).Focus(FocusState.Keyboard);
+        }
+
+        private void FocusPausedRecommendation(int index) => FocusPausedGridItem(PausedRecommendationGrid, index);
+        private void FocusPausedCollection(int index) => FocusPausedGridItem(PausedCollectionGrid, index);
+
+        private async void FocusPausedGridItem(GridView grid, int index)
+        {
+            if (!_pausedRecommendationsVisible || index < 0 || index >= grid.Items.Count) return;
             int generation = ++_pausedRecommendationFocus;
-            _pausedRecommendationIndex = index; object item = PausedRecommendationGrid.Items[index];
+            _pausedFocusGrid = grid;
+            if (grid == PausedCollectionGrid) _pausedCollectionIndex = index;
+            else _pausedRecommendationIndex = index;
+            object item = grid.Items[index];
             try {
-            PausedRecommendationGrid.ScrollIntoView(item, ScrollIntoViewAlignment.Default);
+            grid.ScrollIntoView(item, ScrollIntoViewAlignment.Default);
             bool focused = false;
             for (int attempt = 0; attempt < 3 && !focused && generation == _pausedRecommendationFocus; ++attempt)
                 await Dispatcher.RunAsync(CoreDispatcherPriority.Low, () => {
                     if (_disposed || !_pausedRecommendationsVisible || generation != _pausedRecommendationFocus
-                        || index >= PausedRecommendationGrid.Items.Count || !ReferenceEquals(item, PausedRecommendationGrid.Items[index])) return;
-                    PausedRecommendationGrid.UpdateLayout();
-                    var container = PausedRecommendationGrid.ContainerFromIndex(index) as Control;
+                        || index >= grid.Items.Count || !ReferenceEquals(item, grid.Items[index])) return;
+                    grid.UpdateLayout();
+                    var container = grid.ContainerFromIndex(index) as Control;
                     focused = container != null && container.Focus(FocusState.Keyboard);
                 });
             } catch (Exception) { /* The player may close while a container is being realized. */ }

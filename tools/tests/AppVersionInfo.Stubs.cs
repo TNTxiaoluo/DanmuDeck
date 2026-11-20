@@ -38,7 +38,9 @@ namespace BiliXbox.VersionTests
             Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.8.0", false, "1.0.2"), "1.0.2");
             Equal(Services.AppVersionInfo.FormatDisplayVersion("2.3.4.5", true, "bad"), "2.3.4b");
             Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.8.0", true, "1.0.2b"), "1.0.8b");
-            Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.8.0", true, "1.0.2.0"), "1.0.8b");
+            Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.23.0", true, "1.0.3.1"), "1.0.3.1b");
+            Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.4.0", false, ""), "1.0.4");
+            Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.8.0", true, "1.0.2.0"), "1.0.2.0b");
             Equal(Services.AppVersionInfo.FormatDisplayVersion("bad", false, ""), "未知版本");
             Equal(Services.AppVersionInfo.FormatDisplayVersion("unavailable", true, "1.0.2"), "1.0.2b");
             Equal(Services.AppVersionInfo.FormatDisplayVersion("1.0.8.0", false, "1.65536.2"), "1.0.8");

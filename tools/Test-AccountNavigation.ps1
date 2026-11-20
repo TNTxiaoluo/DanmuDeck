@@ -18,6 +18,7 @@ $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskSource = 'using System.Collections.Generic;' + [Environment]::NewLine +
     [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\MainPage.AccountLibrary.cs'))
 foreach ($taskFile in @('src\BiliXbox\Models\ApiModels.cs', 'src\BiliXbox\Models\AccountLibraryModels.cs',
+    'src\BiliXbox\Controls\PlaybackQualityEntitlement.cs',
     'tools\tests\AccountNavigation.Stubs.cs', 'tools\tests\AccountNavigation.Tests.cs')) {
     $taskText = [IO.File]::ReadAllText((Join-Path $taskRoot $taskFile))
     $taskSource += [Environment]::NewLine + [regex]::Replace($taskText, '(?m)^using [^;]+;\r?\n', '')

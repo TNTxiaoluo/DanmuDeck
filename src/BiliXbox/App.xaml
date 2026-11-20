@@ -1,6 +1,11 @@
 <Application x:Class="BiliXbox.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:primitives="using:Windows.UI.Xaml.Controls.Primitives">
+             xmlns:primitives="using:Windows.UI.Xaml.Controls.Primitives" xmlns:controls="using:BiliXbox.Controls">
   <Application.Resources>
+    <!-- Compile the custom row type into UWP XAML metadata; runtime-only
+         markup does not register code-only controls in .NET Native builds. -->
+    <DataTemplate x:Key="LiveChatMessageTemplate">
+      <controls:LiveChatMessageView Message="{Binding}" />
+    </DataTemplate>
     <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="#FB7299" />
     <SolidColorBrush x:Key="SystemControlHighlightAltAccentBrush" Color="#FB7299" />
     <!-- tvOS-like focus: white, not brand pink. -->

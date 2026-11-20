@@ -48,6 +48,7 @@ namespace Windows.UI.Text
 
 namespace Windows.UI.Xaml
 {
+    public class FrameworkElement : Windows.UI.Xaml.Controls.FixtureFrameworkElement { }
     public enum Visibility { Visible, Collapsed }
     public enum TextWrapping { NoWrap }
     public enum TextTrimming { CharacterEllipsis }
@@ -98,17 +99,17 @@ namespace Windows.UI.Xaml.Controls
         public double ActualWidth { get; set; }
         public double ActualHeight { get; set; }
         public Windows.UI.Xaml.Visibility Visibility { get; set; }
-        public System.Collections.Generic.List<TextBlock> Children =
-            new System.Collections.Generic.List<TextBlock>();
+        public System.Collections.Generic.List<Windows.UI.Xaml.FrameworkElement> Children =
+            new System.Collections.Generic.List<Windows.UI.Xaml.FrameworkElement>();
 
         public event System.EventHandler<Windows.UI.Xaml.RoutedEventArgs> Loaded;
         public event System.EventHandler<Windows.UI.Xaml.RoutedEventArgs> Unloaded;
         public event System.EventHandler<Windows.UI.Xaml.SizeChangedEventArgs> SizeChanged;
 
-        public static void SetLeft(TextBlock block, double left) { block.LayoutLeft = left; block.LeftLayoutWrites++; }
-        public static void SetTop(TextBlock block, double top) { block.Top = top; }
-        public static void SetZIndex(TextBlock block, int value) { block.ZIndex = value; }
-        public static int GetZIndex(TextBlock block) { return block.ZIndex; }
+        public static void SetLeft(Windows.UI.Xaml.FrameworkElement block, double left) { block.LayoutLeft = left; block.LeftLayoutWrites++; }
+        public static void SetTop(Windows.UI.Xaml.FrameworkElement block, double top) { block.Top = top; }
+        public static void SetZIndex(Windows.UI.Xaml.FrameworkElement block, int value) { block.ZIndex = value; }
+        public static int GetZIndex(Windows.UI.Xaml.FrameworkElement block) { return block.ZIndex; }
 
         public void SetViewport(double width, double height)
         {
@@ -128,11 +129,12 @@ namespace Windows.UI.Xaml.Controls
         }
     }
 
-    public class TextBlock
+    public class TextBlock : Windows.UI.Xaml.FrameworkElement { }
+    public class FixtureFrameworkElement
     {
         public static int Creations;
         public static int Measurements;
-        public TextBlock() { Creations++; }
+        public FixtureFrameworkElement() { Creations++; }
         public string Text { get; set; }
         public double FontSize { get; set; }
         public int FontWeight { get; set; }
@@ -157,7 +159,7 @@ namespace Windows.UI.Xaml.Controls
         public double Top { get; set; }
         public int ZIndex { get; set; }
 
-        public void Measure(Windows.Foundation.Size availableSize)
+        public virtual void Measure(Windows.Foundation.Size availableSize)
         {
             Measurements++;
             // Deliberately deterministic width approximation for collision tests.

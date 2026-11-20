@@ -7,6 +7,7 @@ namespace BiliXbox
         private IReadOnlyList<AccountLibraryItem> _episodeChoices = Array.Empty<AccountLibraryItem>();
         private VideoDetail _video;
         private long _currentCid;
+        private int _preferredQuality = 120;
         private bool _watching = true, _videoReturnsToCreator;
         private readonly CancellationTokenSource _watchCts = new CancellationTokenSource();
         private readonly FakeMedia _media = new FakeMedia();
@@ -14,15 +15,24 @@ namespace BiliXbox
         private readonly FakeCreator CreatorHub = new FakeCreator();
         private long selectedCid, selectedEpisode;
         private string openedBvid;
+        private CreatorPlaybackBookmark openedBookmark;
+        private sealed class CreatorPlaybackBookmark
+        {
+            public long Cid;
+            public int Quality;
+            public bool Playing;
+            public IReadOnlyList<CollectionEpisode> CollectionEpisodes;
+        }
         private Task LoadPartAsync(long cid) { selectedCid = cid; return Task.CompletedTask; }
         private Task PlaySelectedEpisodeAsync(AccountLibraryItem item) { selectedEpisode = item.EpisodeId; return Task.CompletedTask; }
-        private Task OpenVideoAsync(string bvid, string title) { openedBvid = bvid; return Task.CompletedTask; }
+        private Task OpenVideoAsync(string bvid, string title, CreatorPlaybackBookmark bookmark = null)
+        { openedBvid = bvid; openedBookmark = bookmark; return Task.CompletedTask; }
         private sealed class FakeMedia { public object Source = new object(); }
         private sealed class FakeApi
         {
             public AccountSeasonDetail Detail;
             public TaskCompletionSource<AccountSeasonDetail> Pending;
-            public Task<AccountSeasonDetail> GetSeasonDetailAsync(long season, long episode, CancellationToken token) => Pending?.Task ?? Task.FromResult(Detail);
+            public Task<AccountSeasonDetail> GetPublicSeasonDetailAsync(long season, long episode, CancellationToken token) => Pending?.Task ?? Task.FromResult(Detail);
         }
         private sealed class FakeCreator
         {
@@ -44,6 +54,16 @@ namespace BiliXbox
             Check(await page.AdvanceAfterEndAsync(page._media.Source) && page.selectedCid == 20, "Next part preserves service order");
             page._currentCid = 20; page.selectedCid = 0;
             Check(!await page.AdvanceAfterEndAsync(page._media.Source) && page.selectedCid == 0, "Final part stops without wrapping");
+            var collection = new[] { new CollectionEpisode { Bvid = "before" }, new CollectionEpisode { Bvid = "fixture" },
+                new CollectionEpisode { Bvid = "next", Cid = 30 } };
+            page._video.CollectionEpisodes = collection;
+            Check(await page.AdvanceAfterEndAsync(page._media.Source) && page.openedBvid == "next"
+                && page.openedBookmark.Cid == 30 && page.openedBookmark.Playing && page.openedBookmark.Quality == 120
+                && ReferenceEquals(page.openedBookmark.CollectionEpisodes, collection),
+                "Last part advances to the next collection entry from its start and retains the manual 4K preference");
+            page.openedBvid = null;
+            page._video.Bvid = "next";
+            Check(!await page.AdvanceAfterEndAsync(page._media.Source) && page.openedBvid == null, "Last collection entry stops without wrapping");
             var a = new AccountLibraryItem { SeasonId = 5, EpisodeId = 100 };
             var b = new AccountLibraryItem { SeasonId = 5, EpisodeId = 101 };
             page._playingEpisodeItem = a; page._api.Detail = new AccountSeasonDetail { Episodes = new [] { a,b } };

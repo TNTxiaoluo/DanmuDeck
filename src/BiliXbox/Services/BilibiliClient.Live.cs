@@ -42,13 +42,55 @@ namespace BiliXbox.Services
         {
             CheckPage(page);
             if (parentAreaId < 0 || areaId < 0 || (parentAreaId == 0 && areaId != 0)) throw new ArgumentOutOfRangeException(nameof(areaId));
+            long account = IsLoggedIn ? CurrentUser?.Mid ?? 0 : 0;
+            long epoch = _loginSessionEpoch;
+            string session = _cookies.GetCookieValue("SESSDATA");
             var data = RequireData(await LiveGetAsync("/room/v3/area/getRoomList?platform=web&parent_area_id=" + Invariant(parentAreaId)
                 + "&area_id=" + Invariant(areaId) + "&sort_type=online&page_size=20&page=" + Invariant(page), 0, ct));
             var list = data["list"] as JArray;
             if (list == null) throw LiveFormatError("直播列表");
             var rooms = list.Where(item => Number(item, "roomid") > 0).Select(MapLiveRoom).GroupBy(room => room.Id).Select(group => group.First()).ToList();
             long total = Number(data, "count");
-            return new LiveRoomPage { Page = page, Items = rooms, HasMore = rooms.Count > 0 && (total > 0 ? (long)page * 20 < total : rooms.Count >= 20) };
+            bool more = rooms.Count > 0 && (total > 0 ? (long)page * 20 < total : rooms.Count >= 20);
+            if (page == 1 && parentAreaId == 0 && account > 0 && SessionMatches(epoch, account, session))
+            {
+                var followed = await TryGetFollowedLiveRoomsAsync(ct);
+                var recommendations = rooms.ToDictionary(room => room.Id);
+                foreach (var room in followed)
+                {
+                    LiveRoom recommended;
+                    if (!recommendations.TryGetValue(room.Id, out recommended)) continue;
+                    if (room.CoverUrl.Length == 0) room.CoverUrl = recommended.CoverUrl;
+                    if (room.Online == 0) room.Online = recommended.Online;
+                }
+                rooms = followed.Concat(rooms).GroupBy(room => room.Id).Select(group => group.First()).ToList();
+            }
+            ct.ThrowIfCancellationRequested();
+            if (account > 0 && !SessionMatches(epoch, account, session)) throw new OperationCanceledException("直播列表请求期间账号已改变。", ct);
+            return new LiveRoomPage { Page = page, Items = rooms, HasMore = more };
+        }
+
+        private async Task<IReadOnlyList<LiveRoom>> TryGetFollowedLiveRoomsAsync(CancellationToken ct)
+        {
+            using (var request = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                request.CancelAfter(TimeSpan.FromSeconds(4));
+                try
+                {
+                    var data = RequireData(await LiveGetAsync("/xlive/web-ucenter/v1/xfetter/GetWebList?hit_ab=true", 0, request.Token));
+                    var list = data["rooms"] as JArray ?? data["list"] as JArray ?? new JArray();
+                    return list.OfType<JObject>()
+                        .Where(item => Number(item, "live_status") == 1 && Number(item, "uid") > 0)
+                        .Select(item =>
+                        {
+                            var room = MapLiveRoom(item);
+                            room.IsFollowed = true;
+                            return room;
+                        }).Where(room => room.Id > 0).ToArray();
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && !(ex is OutOfMemoryException))
+                { return Array.Empty<LiveRoom>(); }
+            }
         }
 
         public async Task<LiveRoom> GetLiveRoomAsync(long roomId, CancellationToken ct = default(CancellationToken))
@@ -183,7 +225,8 @@ namespace BiliXbox.Services
             var messages = data["room"] as JArray;
             if (messages == null) throw LiveFormatError("最近直播弹幕");
             return messages.Where(item => !string.IsNullOrWhiteSpace(Str(item, "text"))).Select(item => new LiveChatMessage
-            { Kind = LiveChatMessageKind.Danmaku, Text = PlainText(Str(item, "text")), UserName = PlainText(Str(item, "nickname")), UserId = Number(item, "uid") }).ToList();
+            { Kind = LiveChatMessageKind.Danmaku, Text = PlainText(Str(item, "text")), UserName = PlainText(Str(item, "nickname")), UserId = Number(item, "uid"),
+                Emotes = LiveEmoteMetadata.FromHistory(item, PlainText(Str(item, "text"))) }).ToList();
         }
 
         public async Task SendLiveDanmakuAsync(long roomId, string text, CancellationToken ct = default(CancellationToken))
@@ -357,8 +400,9 @@ namespace BiliXbox.Services
 
         private static LiveRoom MapLiveRoom(JToken item)
         {
-            return new LiveRoom { Id = Number(item, "roomid"), OwnerMid = Number(item, "uid"), Title = PlainText(Str(item, "title")),
-                OwnerName = PlainText(Str(item, "uname")), AvatarUrl = ImageUrl(Str(item, "face")), CoverUrl = ImageUrl(FirstLiveText(item, "cover", "user_cover", "system_cover")),
+            long id = Number(item, "roomid");
+            return new LiveRoom { Id = id > 0 ? id : Number(item, "room_id"), OwnerMid = Number(item, "uid"), Title = PlainText(Str(item, "title")),
+                OwnerName = PlainText(Str(item, "uname")), AvatarUrl = ImageUrl(Str(item, "face")), CoverUrl = ImageUrl(FirstLiveText(item, "cover", "user_cover", "system_cover", "cover_from_user", "keyframe")),
                 Area = PlainText(FirstLiveText(item, "area_v2_name", "area_name")), AreaId = Number(item, "area_v2_id"),
                 ParentAreaId = Number(item, "area_v2_parent_id"), Online = Number(item, "online"), IsLive = true };
         }

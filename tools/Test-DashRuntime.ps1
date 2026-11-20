@@ -14,6 +14,8 @@ device testing. The local manifest can contain signed URLs and is not printed.
 param(
     [Parameter(Mandatory)][string] $ManifestPath,
     [switch] $Decode,
+    [switch] $IndexCompatibility,
+    [switch] $Acceleration,
     [ValidateRange(5, 60)][int] $TimeoutSeconds = 30
 )
 
@@ -49,6 +51,12 @@ foreach ($assembly in @('System.Runtime.WindowsRuntime.dll', 'System.Runtime.Int
 $arguments += $source
 $arguments += Join-Path $repoRoot 'tools\tests\DashTransportRuntime.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\AdaptivePlaybackSource.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DashSegmentIndex.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DashIndexCompatibility.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\AdaptiveDownloadFailureState.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\RangeAccelerationFilter.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\ParallelRangeDownloader.cs'
+$arguments += Join-Path $repoRoot 'src\BiliXbox\Services\OrderedRangeReadStream.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DashRoutePolicy.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\DownloadSpeedMeter.cs'
 $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\PlaybackFrameRatePolicy.cs'
@@ -58,6 +66,8 @@ $arguments += Join-Path $repoRoot 'src\BiliXbox\Services\PlaybackCodecSupport.cs
 if ($LASTEXITCODE -ne 0) { throw "Runtime probe compilation failed: $LASTEXITCODE" }
 $runtimeArguments = @($manifest, [string] $TimeoutSeconds)
 if ($Decode) { $runtimeArguments += 'decode' }
+if ($IndexCompatibility) { $runtimeArguments += 'compat' }
+if ($Acceleration) { $runtimeArguments += 'accelerated' }
 & $executable @runtimeArguments
 if ($LASTEXITCODE -ne 0) { throw "Actual Windows DASH runtime probe failed: $LASTEXITCODE" }
 Write-Host 'PASS: real Windows AdaptiveMediaSource runtime probe.'

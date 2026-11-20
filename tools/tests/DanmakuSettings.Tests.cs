@@ -32,6 +32,7 @@ namespace BiliXbox.DanmakuSettingsTests
         {
             _assertions = 0;
             ImmutableSnapshotsAndCorruptStorage();
+            IndependentLivePreferences();
             CloudRuleTypesAndRegexBounds();
             UnicodeDuplicateKeys();
             DisplayAreaAndDensity();
@@ -76,6 +77,34 @@ namespace BiliXbox.DanmakuSettingsTests
                 loaded.SpeedScale == 2 && loaded.ShowScrolling && !loaded.SmartMask, "Corrupt fields were not clamped independently.");
             ApplicationData.Current.LocalSettings.Values["danmaku.preferences.v1"] = "corrupt";
             Check(store.Load().AreaFraction == 1, "A corrupt composite object crashed or retained invalid settings.");
+        }
+        private static void IndependentLivePreferences()
+        {
+            ApplicationData.Current.LocalSettings.Values.Clear();
+            var video = new DanmakuSettingsStore();
+            var live = new DanmakuSettingsStore("live.danmaku.preferences.v1");
+            Check(live.LoadEnabled() && video.LoadEnabled(), "new stores default enabled");
+            video.Save(DanmakuSettings.Default.With(opacity: .75, smartMask: true));
+            live.Save(DanmakuSettings.Default.With(opacity: .25, fontScale: 1.5, densityLimit: 12,
+                smartMask: false, showColor: false, showTop: false));
+            live.SaveEnabled(false);
+            Check(video.Load().Opacity == .75 && video.Load().SmartMask && video.LoadEnabled(), "live changes cannot alter video preferences");
+            var restored = new DanmakuSettingsStore("live.danmaku.preferences.v1");
+            Check(!restored.LoadEnabled() && restored.Load().Opacity == .25 && restored.Load().FontScale == 1.5
+                && restored.Load().DensityLimit == 12 && !restored.Load().SmartMask, "live snapshot and switch survive reopening");
+            using (var surface = Surface(restored.Load()))
+            {
+                surface.Update(TimeSpan.Zero, false);
+                surface.Add(Item(0, "color hidden", color: 0xff0000));
+                surface.Add(Item(0, "top hidden", mode: 5));
+                Check(surface.Children.Count == 0, "live receiving color/top filters affect the real renderer");
+                surface.Add(Item(0, "white visible"));
+                Check(surface.Children.Count == 1, "white live scrolling remains visible");
+            }
+            restored.Save(DanmakuSettings.Default.With(smartMask: false)); restored.SaveEnabled(true);
+            Check(video.Load().Opacity == .75 && restored.LoadEnabled(), "reset live leaves ordinary-video settings intact");
+            ApplicationData.Current.LocalSettings.Values["live.danmaku.preferences.v1.enabled"] = "corrupt";
+            Check(restored.LoadEnabled(), "malformed persisted switch uses safe default");
         }
         private static void CloudRuleTypesAndRegexBounds()
         {
@@ -156,7 +185,7 @@ namespace BiliXbox.DanmakuSettingsTests
                     for (int batch = 1; batch <= (allowed.Count + 7) / 8; ++batch)
                         overlay.Update(TimeSpan.FromSeconds(batch / 10d), false);
                     var rows = new HashSet<double>();
-                    TextBlock top = null, bottom = null;
+                    Windows.UI.Xaml.FrameworkElement top = null, bottom = null;
                     foreach (var block in overlay.Children)
                     {
                         if (block.Text == "fixed-top") top = block;

@@ -17,6 +17,8 @@ foreach ($file in @('src/BiliXbox/Models/ApiModels.cs','src/BiliXbox/Models/Crea
 $page = [IO.File]::ReadAllText((Join-Path $root 'src/BiliXbox/MainPage.ViewingExperience.cs'))
 $method = [regex]::Match($page, '(?s)        private async Task<bool> AdvanceAfterEndAsync\(object source\).*?\r?\n        \}')
 if (-not $method.Success) { throw 'Production end-of-video method not found.' }
-$source += [Environment]::NewLine + [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tests/ViewingPlayback.Tests.cs')).Replace('/* END_METHOD */', $method.Value)
+$collection = [regex]::Match($page, '(?s)        private Task PlayCollectionEpisodeAsync\(.*?\r?\n        \}')
+if (-not $collection.Success) { throw 'Production collection playback method not found.' }
+$source += [Environment]::NewLine + [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tests/ViewingPlayback.Tests.cs')).Replace('/* END_METHOD */', ($method.Value + "`n" + $collection.Value))
 Add-Type -TypeDefinition $source -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414'
 [BiliXbox.MainPage]::RunViewingPlaybackTests().GetAwaiter().GetResult()

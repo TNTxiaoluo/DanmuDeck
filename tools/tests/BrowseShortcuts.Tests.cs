@@ -17,11 +17,12 @@ namespace BiliXbox {
         }
         private readonly FakeHub AccountLibrary=new FakeHub(),CreatorHub=new FakeHub();
         private bool TryOpenCommentComposer(bool reply){if(reply)replies++;return true;}
-        private bool _virtualLb,_rawLb,_lbChordUsed;
+        private bool _virtualLb,_rawLb,_lbChordUsed,_accountChordUsed;
         private Gamepad _activeGamepad;
         private readonly ShoulderChordState _viewingChord=new ShoulderChordState();
         private DateTimeOffset _lastViewingChord=DateTimeOffset.MinValue;
-        private int refreshes,steps,seeks;
+        private int refreshes,steps,seeks,accountOpens;
+        private Task OpenAccountAsync(){++accountOpens;return Task.CompletedTask;}
         private Task RefreshFeedAsync(){++refreshes;return Task.CompletedTask;}
         private void StepHomeSection(int value){++steps;}
         private void SeekVideoShoulder(int value){++seeks;}
@@ -44,7 +45,9 @@ namespace BiliXbox {
             page.ReleaseViewingChord(VirtualKey.GamepadLeftShoulder);
             Check(page.steps==0&&page.seeks==0,"LB+X release never changes section or seeks");
             page=new MainPage();page.HandleViewingChord(VirtualKey.GamepadLeftShoulder,false);
-            Check(!page.HandleViewingChord(VirtualKey.GamepadY,false)&&page.refreshes==0,"Y is available to search rather than another refresh binding");
+            Check(page.HandleViewingChord(VirtualKey.GamepadY,false)&&page.accountOpens==1&&page.refreshes==0,"LB+Y opens the account and consumes Y");
+            page.ReleaseViewingChord(VirtualKey.GamepadLeftShoulder);
+            Check(page.steps==0&&page.seeks==0,"LB+Y release never changes section or seeks");
             page=new MainPage();page.HandleViewingChord(VirtualKey.GamepadLeftShoulder,false);page.ReleaseViewingChord(VirtualKey.GamepadLeftShoulder);
             Check(page.steps==1&&page.refreshes==0,"standalone LB still selects previous section");
             page=new MainPage();Check(!page.HandleViewingChord(VirtualKey.GamepadY,false),"standalone Y remains available to search");
@@ -56,6 +59,12 @@ namespace BiliXbox {
             page.PollViewingChord(page._activeGamepad.Reading,true);
             page.PollViewingChord(new GamepadReading(),true);
             Check(page.refreshes==1&&page.steps==0&&page.seeks==0,"raw plus mapped LB+X delivery is deduplicated without trailing section action");
+            page=new MainPage();page._activeGamepad=new Gamepad();page.RawGamepadOwnsNavigation=true;
+            page._activeGamepad.Reading=new GamepadReading {Buttons=GamepadButtons.LeftShoulder|GamepadButtons.Y};
+            page.PollViewingChord(page._activeGamepad.Reading,true);page.HandleViewingChord(VirtualKey.GamepadY,false);
+            page.HandleViewingChord(VirtualKey.GamepadY,true);page.PollViewingChord(page._activeGamepad.Reading,true);
+            page.PollViewingChord(new GamepadReading(),true);
+            Check(page.accountOpens==1&&page.refreshes==0&&page.steps==0&&page.seeks==0,"raw and routed LB+Y open the account once");
             page=new MainPage();page.HandleViewingChord(VirtualKey.GamepadLeftShoulder,false);
             page.HandleViewingChord(VirtualKey.GamepadX,false);page.PollViewingChord(new GamepadReading(),false);
             page.ReleaseViewingChord(VirtualKey.GamepadLeftShoulder);
@@ -70,7 +79,7 @@ namespace BiliXbox {
             page.PollViewingChord(new GamepadReading{Buttons=GamepadButtons.LeftShoulder|GamepadButtons.X},true);
             page.ReleaseViewingChord(VirtualKey.GamepadLeftShoulder);page.PollViewingChord(new GamepadReading(),true);
             Check(page.replies==1&&page.refreshes==0&&page.steps==0&&page.seeks==0,"LB+X targets comment reply once without refresh or trailing seek");
-            return "PASS: "+checks+" production LB+X refresh/reply, repeat, editor, single-X exclusion and search-preservation checks (external input substitutes).";
+            return "PASS: "+checks+" production LB+X refresh/reply, LB+Y account, repeat, editor and search checks (external input substitutes).";
         }
     }
 }

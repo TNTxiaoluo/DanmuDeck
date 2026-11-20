@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
 $taskPage=[IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/MainPage.ViewingShortcuts.cs'))
 $taskMethods=''
-foreach($taskName in @('HandleViewingChord','ReleaseViewingChord','PollViewingChord','RunViewingChord','RunTargetedCommentReply')){
+foreach($taskName in @('HandleViewingChord','ReleaseViewingChord','PollViewingChord','RunViewingChord','RunTargetedCommentReply','RunAccountChord')){
     $taskMatch=[regex]::Match($taskPage,'(?m)^        private (?:async )?(?:void|bool) '+$taskName+'\([^\r\n]*\)\s*\{')
     if(-not $taskMatch.Success){throw "Production method missing: $taskName"}
     $taskBrace=$taskPage.IndexOf('{',$taskMatch.Index);$taskEnd=$taskBrace+1;$taskDepth=1

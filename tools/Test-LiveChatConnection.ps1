@@ -15,7 +15,7 @@ using BiliXbox.Models;
 using BiliXbox.Services;
 using Windows.UI.Xaml.Automation;
 '@
-foreach ($taskFile in @('src\BiliXbox\Models\LiveModels.cs','tools\tests\LiveChatConnection.Tests.cs')) {
+foreach ($taskFile in @('src\BiliXbox\Models\LiveModels.cs','src\BiliXbox\Controls\LiveMessageQueue.cs','tools\tests\LiveChatConnection.Tests.cs')) {
     $taskSource += [Environment]::NewLine + [regex]::Replace([IO.File]::ReadAllText((Join-Path $taskRoot $taskFile)), '(?m)^using [^;]+;\r?\n', '')
 }
 $taskProduction = [IO.File]::ReadAllText((Join-Path $taskRoot 'src\BiliXbox\Controls\LiveHubView.Playback.cs'))

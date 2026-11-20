@@ -95,6 +95,29 @@ namespace BiliXbox.ViewingApiTests
                 Check(season != null && season.IsSeason && season.SeasonId == 789 && data.HasMore, "Catalog contains seasons, not UGC videos");
             }
             Route(request => {
+                if (request.RequestUri.AbsolutePath == "/x/space/bangumi/follow/list")
+                    return Ok(new JObject { ["total"] = 2, ["list"] = new JArray(
+                        new JObject { ["season_id"] = 8, ["title"] = "追番" },
+                        new JObject { ["season_id"] = 789, ["title"] = "已追番剧" }) });
+                if (request.RequestUri.AbsolutePath == "/pgc/web/timeline/v2")
+                    return Ok(new JObject { ["latest"] = new JArray(
+                        new JObject { ["season_id"] = 10, ["published"] = 1, ["title"] = "近期更新", ["pub_ts"] = 300 },
+                        new JObject { ["season_id"] = 11, ["published"] = 1, ["title"] = "新番首播", ["pub_index"] = "第1话", ["pub_ts"] = 200 },
+                        new JObject { ["season_id"] = 12, ["published"] = 0, ["title"] = "预告", ["pub_ts"] = 400 },
+                        new JObject { ["season_id"] = 8, ["published"] = 1, ["title"] = "追番重复", ["pub_ts"] = 100 }) });
+                Check(request.RequestUri.Query.Contains("order=5&sort=0"), "Anime index is requested in premiere order");
+                return new JObject { ["code"] = 0, ["result"] = new JObject { ["total"] = 21, ["list"] = new JArray(
+                    new JObject { ["season_id"] = 9, ["title"] = "公开" },
+                    new JObject { ["season_id"] = 789, ["title"] = "重复" }) } };
+            });
+            using (var api = new BilibiliClient()) {
+                await Login(api);
+                var data = await api.GetSeasonCatalogAsync(false, 1, CancellationToken.None);
+                Check(data.Videos.Cast<AccountLibraryItem>().Select(item => item.SeasonId).SequenceEqual(new long[] { 8, 789, 11, 10, 9 })
+                    && data.Videos[0].Owner.StartsWith("已追番") && data.HasMore,
+                    "Followed anime leads, then recent premieres and updates, then the catalog. Exclude unaired and duplicate entries.");
+            }
+            Route(request => {
                 if (request.RequestUri.Host.EndsWith("hdslb.com")) {
                     string cookie; Check(!request.Headers.TryGetValue("Cookie", out cookie) || !cookie.Contains("fixture-only"), "No account cookie on subtitle CDN");
                     return new JObject { ["body"] = new JArray(new JObject { ["from"] = 1, ["to"] = 2, ["content"] = "hello" },

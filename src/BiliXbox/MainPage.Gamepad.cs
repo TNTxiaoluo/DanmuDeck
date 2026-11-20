@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using BiliXbox.Controls;
@@ -46,7 +47,7 @@ namespace BiliXbox
             get
             {
                 if (!_gamepadStarted || _disposed || !_gamepadWindowActive || !_gamepadWindowVisible ||
-                    _dialogOpen || _inputPaneVisible || IsNativeGamepadEditorActive) return false;
+                    (_dialogOpen && !OwnsTvPanelNavigation) || _inputPaneVisible || IsNativeGamepadEditorActive) return false;
                 return _activeGamepad != null && _gamepadCount > 0;
             }
         }
@@ -68,7 +69,7 @@ namespace BiliXbox
                     if ((focused is TextBox || focused is PasswordBox) && editor.IsFocusEngaged) return true;
                     focused = VisualTreeHelper.GetParent(focused);
                 }
-                return _watching && (PartSelector.IsDropDownOpen || PartSelector.IsFocusEngaged);
+                return false;
             }
         }
 
@@ -263,7 +264,11 @@ namespace BiliXbox
                 }
 
                 var frame = _rawGamepadInput.Sample(_gamepadClock.Elapsed, _activeGamepad, buttons, enabled);
-                if (frame.ConfirmReleased) _playerInput.ConfirmKeyUp(DateTimeOffset.UtcNow);
+                if (frame.ConfirmReleased)
+                {
+                    _playerInput.ConfirmKeyUp(DateTimeOffset.UtcNow);
+                    _tvPanelGate?.KeyUp();
+                }
                 if (frame.Direction.HasValue)
                 {
                     ++_rawGamepadActions;
@@ -275,9 +280,9 @@ namespace BiliXbox
                     ++_rawGamepadActions;
                     DispatchPlayerGamepadKey(VirtualKey.GamepadA, false);
                 }
-                PollAuxiliaryGamepad(reading, enabled);
+                PollAuxiliaryGamepad(reading, enabled && !_dialogOpen);
                 PollPlaybackSpeed(reading, enabled);
-                if (enabled && !_watching && !_creatorVisible && !_libraryVisible && !_liveVisible) EnsureGamepadHomeFocus();
+                if (enabled && !_dialogOpen && !_watching && !_creatorVisible && !_libraryVisible && !_liveVisible) EnsureGamepadHomeFocus();
                 if (enabled) DisablePointerCursor();
                 UpdateGamepadFocusOutline();
             }
@@ -304,6 +309,7 @@ namespace BiliXbox
 
         private bool DispatchPlayerGamepadKey(VirtualKey key, bool repeat)
         {
+            if (IsTvPanelOpen) return HandleTvPanelKey(key, repeat);
             ReconcileHomeScrollBeforeNavigation();
             if (_liveVisible) return DispatchLiveSectionKey(key, repeat);
             if (_libraryVisible)
@@ -366,7 +372,7 @@ namespace BiliXbox
         }
 
         private Control[] HomeHeaderControls => new Control[] { LiveSectionButton, HomeButton, PopularSectionButton,
-            AnimationSectionButton, FilmSectionButton, HeaderSearchButton, HomeHistoryButton, HomeFavoritesButton, AccountButton, HelpButton };
+            AnimationSectionButton, FilmSectionButton, HeaderSearchButton, HomeHistoryButton, HomeFavoritesButton, HomeActivityButton, AccountButton, HelpButton };
         private Control[] HomeSearchControls => new Control[] { FilmGenreButton };
         private Control[] HomeContentHeaderControls => SearchModes.Visibility == Visibility.Visible ? HomeModeControls
             : AvailableGamepadHomeControls(HomeSearchControls).Count > 0 ? HomeSearchControls : HomeHeaderControls;
@@ -682,6 +688,7 @@ namespace BiliXbox
                 else if (control == SearchSubmitButton) Search_Click(control, args);
                 else if (control == AccountButton) Account_Click(control, args);
                 else if (control == HomeHistoryButton) HomeHistory_Click(control, args);
+                else if (control == HomeActivityButton) HomeActivity_Click(control, args);
                 else if (control == HomeFavoritesButton) HomeFavorites_Click(control, args);
                 else if (control == HelpButton) Help_Click(control, args);
                 else if (control == SearchVideosButton) SearchVideos_Click(control, args);
@@ -749,7 +756,6 @@ namespace BiliXbox
                 foreach (var item in QualityOptions.Children) if (item is Button button) options.Add(button);
                 foreach (var item in AudioOptions.Children) if (item is Button button) options.Add(button);
                 options.AddRange(_experienceOptions);
-                options.Add(PartSelector);
                 var available = new List<Control>();
                 foreach (var option in options) if (option.IsEnabled && option.Visibility == Visibility.Visible) available.Add(option);
                 int index = available.IndexOf(current);
@@ -925,11 +931,6 @@ namespace BiliXbox
             else if (control == SendReplyCommentButton) SendReplyComment_Click(control, args);
             else if (control == SendCommentButton) SendComment_Click(control, args);
             else if (control == MoreRepliesButton) MoreReplies_Click(control, args);
-            else if (control == PartSelector)
-            {
-                PartSelector.Focus(FocusState.Keyboard);
-                PartSelector.IsDropDownOpen = true;
-            }
             else
             {
                 var button = control as Button;
@@ -1006,7 +1007,7 @@ namespace BiliXbox
             {
                 if (!_playerUi.ControlsVisible) { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
                 selected = _playerInput.Row == PlayerFocusRow.Seek ? (Control)SeekSlider :
-                    _playerInput.Row == PlayerFocusRow.Header ? PlayerHeaderButtons[_playerInput.HeaderIndex] : PlayerButtons[_playerInput.ButtonIndex];
+                    _playerInput.Row == PlayerFocusRow.Header ? PlayerHeaderButtons[_playerInput.HeaderIndex] : PlayerButtons.ElementAtOrDefault(_playerInput.ButtonIndex);
             }
             else
             {
