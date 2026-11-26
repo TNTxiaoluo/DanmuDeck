@@ -14,6 +14,7 @@ namespace BiliXbox.Models
         public string OwnerAvatarUrl { get; set; } = "";
         public string PlayText { get; set; } = "";
         public string DurationText { get; set; } = "";
+        public string Description { get; set; } = "";
     }
 
     public sealed class SearchPage
@@ -30,7 +31,6 @@ namespace BiliXbox.Models
     {
         public long Cid { get; set; }
         public long? ReplyCount { get; set; }
-        public string Description { get; set; } = "";
         public IReadOnlyList<VideoPart> Parts { get; set; } = Array.Empty<VideoPart>();
         public IReadOnlyList<CollectionEpisode> CollectionEpisodes { get; set; } = Array.Empty<CollectionEpisode>();
     }

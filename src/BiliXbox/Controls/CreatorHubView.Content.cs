@@ -20,14 +20,46 @@ namespace BiliXbox.Controls
             var contentGrid = new Grid { ColumnSpacing = 22 };
             contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             var prose = new StackPanel { Spacing = 12 };
-            var content = DynamicText(item, 18); content.MaxLines = 4; content.TextTrimming = TextTrimming.CharacterEllipsis;
-            prose.Children.Add(content);
+            if (item.Video != null)
+            {
+                var title = Text(item.Video.Title, 18, true);
+                title.TextWrapping = TextWrapping.Wrap; title.MaxLines = 2; title.TextTrimming = TextTrimming.CharacterEllipsis;
+                prose.Children.Add(title);
+                if (!string.IsNullOrWhiteSpace(item.Video.Description))
+                {
+                    var intro = SecondaryText(item.Video.Description, 15);
+                    intro.TextWrapping = TextWrapping.Wrap; intro.MaxLines = 3; intro.TextTrimming = TextTrimming.CharacterEllipsis;
+                    prose.Children.Add(intro);
+                }
+            }
+            else
+            {
+                var content = DynamicText(item, 18); content.MaxLines = 4; content.TextTrimming = TextTrimming.CharacterEllipsis;
+                prose.Children.Add(content);
+            }
             if (item.Original != null)
             {
                 var forwarded = new StackPanel { Spacing = 6 };
                 forwarded.Children.Add(SecondaryText("转发 · " + item.Original.Author, 13));
-                var preview = DynamicText(item.Original, 15); preview.MaxLines = 2; preview.TextTrimming = TextTrimming.CharacterEllipsis;
-                forwarded.Children.Add(preview);
+                if (item.Original.Video != null)
+                {
+                    var originalTitle = Text(item.Original.Video.Title, 15, true);
+                    originalTitle.TextWrapping = TextWrapping.Wrap; originalTitle.MaxLines = 2;
+                    originalTitle.TextTrimming = TextTrimming.CharacterEllipsis;
+                    forwarded.Children.Add(originalTitle);
+                    if (!string.IsNullOrWhiteSpace(item.Original.Video.Description))
+                    {
+                        var originalIntro = SecondaryText(item.Original.Video.Description, 13);
+                        originalIntro.TextWrapping = TextWrapping.Wrap; originalIntro.MaxLines = 2;
+                        originalIntro.TextTrimming = TextTrimming.CharacterEllipsis;
+                        forwarded.Children.Add(originalIntro);
+                    }
+                }
+                else
+                {
+                    var preview = DynamicText(item.Original, 15); preview.MaxLines = 2; preview.TextTrimming = TextTrimming.CharacterEllipsis;
+                    forwarded.Children.Add(preview);
+                }
                 prose.Children.Add(new Border
                 {
                     Padding = new Thickness(14), CornerRadius = new CornerRadius(12),
@@ -35,14 +67,8 @@ namespace BiliXbox.Controls
                     BorderThickness = new Thickness(1), Child = forwarded
                 });
             }
-            var video = FindDynamicVideo(item);
-            if (video != null)
-            {
-                var title = Text(video.Title, 17, true);
-                title.TextWrapping = TextWrapping.Wrap; title.MaxLines = 2; title.TextTrimming = TextTrimming.CharacterEllipsis;
-                prose.Children.Add(title);
-            }
             contentGrid.Children.Add(prose);
+            var video = FindDynamicVideo(item);
             var images = item.ImageUrls?.Count > 0 ? item.ImageUrls : item.Original?.ImageUrls;
             string cover = video?.CoverUrl ?? (images?.Count > 0 ? images[0] : null);
             if (!string.IsNullOrWhiteSpace(cover))
@@ -77,18 +103,27 @@ namespace BiliXbox.Controls
         {
             if (item == null) return;
             panel.Children.Add(BuildAuthor(item));
-            panel.Children.Add(DynamicText(item, original ? 16 : 18));
-            if (item.ImageUrls != null) foreach (var url in item.ImageUrls)
-            { var image = MakeImage(url, 700, true); if (image != null) panel.Children.Add(image); }
             if (item.Video != null)
             {
                 var video = new StackPanel { Spacing = 12 };
-                var cover = MakeImage(item.Video.CoverUrl, 350, true); if (cover != null) video.Children.Add(cover);
-                var title = Text(item.Video.Title, 18, true); title.TextWrapping = TextWrapping.Wrap;
+                var title = Text(item.Video.Title, 20, true); 
+                title.TextWrapping = TextWrapping.Wrap;
                 video.Children.Add(title);
+                if (!string.IsNullOrWhiteSpace(item.Video.Description))
+                {
+                    var intro = Text(item.Video.Description, 16);
+                    intro.TextWrapping = TextWrapping.Wrap;
+                    intro.MaxLines = original ? 3 : 6;
+                    intro.TextTrimming = TextTrimming.CharacterEllipsis;
+                    video.Children.Add(intro);
+                }
+                var cover = MakeImage(item.Video.CoverUrl, 350, true); if (cover != null) video.Children.Add(cover);
                 if (!string.IsNullOrEmpty(item.Video.DurationText)) video.Children.Add(SecondaryText("视频 · " + item.Video.DurationText, 13));
                 panel.Children.Add(video);
             }
+            else panel.Children.Add(DynamicText(item, original ? 16 : 18));
+            if (item.ImageUrls != null) foreach (var url in item.ImageUrls)
+            { var image = MakeImage(url, 700, true); if (image != null) panel.Children.Add(image); }
             panel.Children.Add(SecondaryText("点赞 " + item.LikeCount + "   ·   评论 " + item.CommentCount + "   ·   转发 " + item.RepostCount, 14));
             if (!original && item.Original != null)
             {
