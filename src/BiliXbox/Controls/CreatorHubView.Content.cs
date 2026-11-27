@@ -72,6 +72,7 @@ namespace BiliXbox.Controls
             // Text the uploader wrote when publishing (the "粉丝动态" box on upload)
             // stays above the video; an archive post without it shows the intro.
             if (item.Video == null || HasOwnDynamicText(item)) panel.Children.Add(DynamicText(item, original ? 16 : 18));
+            if (item.Video != null && HasOwnDynamicText(item)) panel.Children.Add(HorizontalRule());
             if (item.Video != null)
             {
                 var video = new StackPanel { Spacing = 12 };
@@ -118,6 +119,7 @@ namespace BiliXbox.Controls
                 target.Children.Add(content);
             }
             if (item.Video == null) return;
+            if (HasOwnDynamicText(item)) target.Children.Add(HorizontalRule());
             var title = Text(item.Video.Title, fontSize, true);
             title.TextWrapping = TextWrapping.Wrap; title.MaxLines = 2; title.TextTrimming = TextTrimming.CharacterEllipsis;
             target.Children.Add(title);
@@ -200,6 +202,10 @@ namespace BiliXbox.Controls
 
         private static TextBlock SecondaryText(string value, double size)
         { var text = Text(value, size); text.Foreground = SecondaryBrush(); return text; }
+
+        // Thin divider between the uploader's own words and the video title.
+        private static Border HorizontalRule() =>
+            new Border { Height = 1, Background = Brush(65, 255, 255, 255) };
 
         private static VideoItem FindDynamicVideo(CreatorDynamicItem item) => item?.Video ?? item?.Original?.Video;
     }
