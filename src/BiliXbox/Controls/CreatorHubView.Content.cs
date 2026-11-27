@@ -20,46 +20,12 @@ namespace BiliXbox.Controls
             var contentGrid = new Grid { ColumnSpacing = 22 };
             contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             var prose = new StackPanel { Spacing = 12 };
-            if (item.Video != null)
-            {
-                var title = Text(item.Video.Title, 18, true);
-                title.TextWrapping = TextWrapping.Wrap; title.MaxLines = 2; title.TextTrimming = TextTrimming.CharacterEllipsis;
-                prose.Children.Add(title);
-                if (!string.IsNullOrWhiteSpace(item.Video.Description))
-                {
-                    var intro = SecondaryText(item.Video.Description, 15);
-                    intro.TextWrapping = TextWrapping.Wrap; intro.MaxLines = 3; intro.TextTrimming = TextTrimming.CharacterEllipsis;
-                    prose.Children.Add(intro);
-                }
-            }
-            else
-            {
-                var content = DynamicText(item, 18); content.MaxLines = 4; content.TextTrimming = TextTrimming.CharacterEllipsis;
-                prose.Children.Add(content);
-            }
+            AppendDynamicSummaryText(prose, item, 18, 15, 4, 3);
             if (item.Original != null)
             {
                 var forwarded = new StackPanel { Spacing = 6 };
                 forwarded.Children.Add(SecondaryText("转发 · " + item.Original.Author, 13));
-                if (item.Original.Video != null)
-                {
-                    var originalTitle = Text(item.Original.Video.Title, 15, true);
-                    originalTitle.TextWrapping = TextWrapping.Wrap; originalTitle.MaxLines = 2;
-                    originalTitle.TextTrimming = TextTrimming.CharacterEllipsis;
-                    forwarded.Children.Add(originalTitle);
-                    if (!string.IsNullOrWhiteSpace(item.Original.Video.Description))
-                    {
-                        var originalIntro = SecondaryText(item.Original.Video.Description, 13);
-                        originalIntro.TextWrapping = TextWrapping.Wrap; originalIntro.MaxLines = 2;
-                        originalIntro.TextTrimming = TextTrimming.CharacterEllipsis;
-                        forwarded.Children.Add(originalIntro);
-                    }
-                }
-                else
-                {
-                    var preview = DynamicText(item.Original, 15); preview.MaxLines = 2; preview.TextTrimming = TextTrimming.CharacterEllipsis;
-                    forwarded.Children.Add(preview);
-                }
+                AppendDynamicSummaryText(forwarded, item.Original, 15, 13, 2, 2);
                 prose.Children.Add(new Border
                 {
                     Padding = new Thickness(14), CornerRadius = new CornerRadius(12),
@@ -103,25 +69,25 @@ namespace BiliXbox.Controls
         {
             if (item == null) return;
             panel.Children.Add(BuildAuthor(item));
+            // Text the uploader wrote when publishing (the "粉丝动态" box on upload)
+            // stays above the video; an archive post without it shows the intro.
+            if (item.Video == null || HasOwnDynamicText(item)) panel.Children.Add(DynamicText(item, original ? 16 : 18));
             if (item.Video != null)
             {
                 var video = new StackPanel { Spacing = 12 };
-                var title = Text(item.Video.Title, 20, true); 
+                var title = Text(item.Video.Title, original ? 18 : 20, true);
                 title.TextWrapping = TextWrapping.Wrap;
                 video.Children.Add(title);
                 if (!string.IsNullOrWhiteSpace(item.Video.Description))
                 {
-                    var intro = Text(item.Video.Description, 16);
+                    var intro = SecondaryText(item.Video.Description, original ? 15 : 16);
                     intro.TextWrapping = TextWrapping.Wrap;
-                    intro.MaxLines = original ? 3 : 6;
-                    intro.TextTrimming = TextTrimming.CharacterEllipsis;
                     video.Children.Add(intro);
                 }
                 var cover = MakeImage(item.Video.CoverUrl, 350, true); if (cover != null) video.Children.Add(cover);
                 if (!string.IsNullOrEmpty(item.Video.DurationText)) video.Children.Add(SecondaryText("视频 · " + item.Video.DurationText, 13));
                 panel.Children.Add(video);
             }
-            else panel.Children.Add(DynamicText(item, original ? 16 : 18));
             if (item.ImageUrls != null) foreach (var url in item.ImageUrls)
             { var image = MakeImage(url, 700, true); if (image != null) panel.Children.Add(image); }
             panel.Children.Add(SecondaryText("点赞 " + item.LikeCount + "   ·   评论 " + item.CommentCount + "   ·   转发 " + item.RepostCount, 14));
@@ -138,6 +104,40 @@ namespace BiliXbox.Controls
                 });
             }
         }
+
+        // Summary card text: the uploader's own words first, then the video
+        // title and intro. Plain posts keep the rich text preview.
+        private static void AppendDynamicSummaryText(StackPanel target, CreatorDynamicItem item,
+            double fontSize, double introSize, int textLines, int introLines)
+        {
+            if (item.Video == null || HasOwnDynamicText(item))
+            {
+                var content = DynamicText(item, item.Video == null ? fontSize : introSize);
+                content.MaxLines = item.Video == null ? textLines : 2;
+                content.TextTrimming = TextTrimming.CharacterEllipsis;
+                target.Children.Add(content);
+            }
+            if (item.Video == null) return;
+            var title = Text(item.Video.Title, fontSize, true);
+            title.TextWrapping = TextWrapping.Wrap; title.MaxLines = 2; title.TextTrimming = TextTrimming.CharacterEllipsis;
+            target.Children.Add(title);
+            if (string.IsNullOrWhiteSpace(item.Video.Description)) return;
+            var intro = SecondaryText(item.Video.Description, introSize);
+            intro.TextWrapping = TextWrapping.Wrap; intro.MaxLines = introLines; intro.TextTrimming = TextTrimming.CharacterEllipsis;
+            target.Children.Add(intro);
+        }
+
+        // True when a video post carries text the uploader wrote, other than a
+        // copy of the video intro (shown once in that case).
+        private static bool HasOwnDynamicText(CreatorDynamicItem item)
+        {
+            var text = CollapseSpace(item?.Content);
+            if (text.Length == 0) return false;
+            return item.Video == null || text != CollapseSpace(item.Video.Description);
+        }
+
+        private static string CollapseSpace(string value) =>
+            string.Join(" ", (value ?? "").Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
 
         private static Grid BuildAuthor(CreatorDynamicItem item)
         {
