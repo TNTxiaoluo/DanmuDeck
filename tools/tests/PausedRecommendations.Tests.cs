@@ -16,13 +16,13 @@ namespace BiliXbox
         private sealed class GridView { public List<VideoItem> Items = new List<VideoItem>(); public Visibility Visibility; }
         private sealed class Panel { public Visibility Visibility; public double Height; }
         private sealed class Label { public string Text; public Visibility Visibility; }
-        private class Control { }
+        private class Control { public void Focus(FocusState state) { FocusManager.Current = this; } }
         private static class FocusManager
         {
             internal static Control Current;
             internal static Control GetFocusedElement() => Current;
         }
-        private sealed class Button : Control { public bool IsEnabled = true; public void Focus(FocusState state) { FocusManager.Current = this; } }
+        private sealed class Button : Control { public bool IsEnabled = true; public object Content; public Visibility Visibility; }
         private sealed class RoutedEventArgs { }
         private sealed class Input
         {
@@ -53,7 +53,31 @@ namespace BiliXbox
         private readonly Api _api = new Api();
         private readonly GridView PausedRecommendationGrid = new GridView(), PausedCollectionGrid = new GridView();
         private readonly Panel PausedRecommendationsPanel = new Panel();
-        private readonly Label PausedRecommendationNotice = new Label(), PausedPanelTitle = new Label(), PausedRelatedTitle = new Label();
+        private readonly Label PausedRecommendationNotice = new Label(), PausedPanelTitle = new Label(), PausedRelatedTitle = new Label(), PausedCollectionTitle = new Label();
+        private sealed class ScrollStub { public Visibility Visibility; public double VerticalOffset; public void ChangeView(double? x, double? y, float? z, bool d) { if (y.HasValue) VerticalOffset = y.Value; } }
+        private readonly ScrollStub PausedIntroScroll = new ScrollStub();
+        private readonly Panel PausedCollectionPage = new Panel();
+        private readonly Button PausedTabIntro = new Button(), PausedTabCollection = new Button(), PausedTabRelated = new Button();
+        private const int PausedIntroTab = 0, PausedCollectionTab = 1, PausedRelatedTab = 2;
+        private bool _pausedHasCollection;
+        private int _pausedTab, _pausedPreferredTab;
+        private void StylePausedTabs() { }
+        private static string PausedHint() => "hint";
+        private Button PausedTabButton(int tab) => tab == PausedIntroTab ? PausedTabIntro : tab == PausedCollectionTab ? PausedTabCollection : PausedTabRelated;
+        private sealed class TagPanel { public System.Collections.Generic.List<object> Children = new System.Collections.Generic.List<object>(); }
+        private readonly TagPanel PausedTagsPanel = new TagPanel();
+        private int _pausedTagIndex;
+        private void PreparePausedIntro() { }
+        private int _pausedActionIndex;
+        private int FocusedPausedAction() => -1;
+        private void FocusPausedAction(int index) { }
+        private Task PressPausedLikeAsync() => Task.CompletedTask;
+        private Task ShowPausedCoinAsync() => Task.CompletedTask;
+        private Task ShowPausedFavoriteAsync() => Task.CompletedTask;
+        private bool PausedTagsAvailable => false;
+        private int FocusedPausedTag() => -1;
+        private void FocusPausedTag(int index) { }
+        private Task SearchPausedTagAsync(string tag) => Task.CompletedTask;
         private readonly Button PausedRecommendationRefresh = new Button(), PausedRecommendationClose = new Button(), PlayPauseButton = new Button();
         private readonly Input _playerInput = new Input();
         private readonly Button[] PlayerButtons = { new Button() };
@@ -62,8 +86,8 @@ namespace BiliXbox
         private void ApplyPlayerUi() { }
         private void ShowControls() { }
         private void FocusPlayerInput() { restored++; }
-        private void FocusPausedRecommendation(int index) { _pausedFocusGrid = PausedRecommendationGrid; focusIndex = _pausedRecommendationIndex = index; }
-        private void FocusPausedCollection(int index) { _pausedFocusGrid = PausedCollectionGrid; _pausedCollectionIndex = index; }
+        private void FocusPausedRecommendation(int index) { FocusManager.Current = null; _pausedFocusGrid = PausedRecommendationGrid; focusIndex = _pausedRecommendationIndex = index; }
+        private void FocusPausedCollection(int index) { FocusManager.Current = null; _pausedFocusGrid = PausedCollectionGrid; _pausedCollectionIndex = index; }
         private static bool PlayerDirectionKey(VirtualKey key, out PlayerDirection direction)
         { direction = (PlayerDirection)key; return key != VirtualKey.A; }
         private static bool PlayerConfirmKey(VirtualKey key) => key == VirtualKey.A;
@@ -81,7 +105,13 @@ namespace BiliXbox
             var page = new MainPage { _wantsPlayback = true }; await page.OpenPausedRecommendationsAsync();
             Check(!page._pausedRecommendationsVisible && page._api.Requests == 0, "Playing state cannot open pause recommendations");
             page._wantsPlayback = false; await page.OpenPausedRecommendationsAsync();
-            Check(page._pausedRecommendationsVisible && page.PausedRecommendationGrid.Items.Count == 1 && page.focusIndex == 0, "Pause loads real rows and focuses first card");
+            Check(page._pausedRecommendationsVisible && page.PausedRecommendationGrid.Items.Count == 1 && page._pausedTab == PausedIntroTab && FocusManager.Current == page.PausedTabIntro, "Pause loads related rows and opens on the 简介 page");
+            page.SwitchPausedTab(1);
+            Check(page._pausedTab == PausedRelatedTab && page.focusIndex == 0, "RB switches to 相关推荐 and focuses its first card");
+            page.HandlePausedRecommendationKey(VirtualKey.Up, false);
+            Check(FocusManager.Current == page.PausedTabRelated && page._pausedFocusGrid == null, "Up from a card returns to its tab");
+            page.HandlePausedRecommendationKey(VirtualKey.Down, false);
+            Check(page._pausedFocusGrid == page.PausedRecommendationGrid, "Down from the tab enters the page");
             page.ClosePausedRecommendations();
             Check(!page._pausedRecommendationsVisible && !page._wantsPlayback && page.restored == 1, "Back closes without resuming video");
             await page.OpenPausedRecommendationsAsync(); Check(page._api.Requests == 1, "Same video/account reopens cached rows");
@@ -118,10 +148,10 @@ namespace BiliXbox
                 "Loading related videos does not take collection focus");
             page.HandlePausedRecommendationKey(VirtualKey.Down, true);
             Check(page._pausedFocusGrid == page.PausedCollectionGrid, "Holding opening Down keeps the initial selection");
-            page.HandlePausedRecommendationKey(VirtualKey.Down, false);
-            Check(page._pausedFocusGrid == page.PausedRecommendationGrid && page._pausedRecommendationIndex == 0, "Down moves from collection to related videos");
-            page.HandlePausedRecommendationKey(VirtualKey.Up, false);
-            Check(page._pausedFocusGrid == page.PausedCollectionGrid && page._pausedCollectionIndex == 1, "Up returns to the same collection card");
+            page.SwitchPausedTab(1);
+            Check(page._pausedFocusGrid == page.PausedRecommendationGrid && page._pausedRecommendationIndex == 0 && page._pausedTab == PausedRelatedTab, "RB moves from 合集 to 相关推荐");
+            page.SwitchPausedTab(-1);
+            Check(page._pausedFocusGrid == page.PausedCollectionGrid && page._pausedCollectionIndex == 1 && page._pausedTab == PausedCollectionTab, "LB returns to the same collection card");
             page.HandlePausedRecommendationKey(VirtualKey.Right, false);
             page.HandlePausedRecommendationKey(VirtualKey.A, false);
             Check(page.openedVideo == collection[2] && ReferenceEquals(page.openedCollection, collection)
@@ -129,6 +159,7 @@ namespace BiliXbox
             page = new MainPage { _wantsPlayback = false };
             page._video.CollectionEpisodes = collection;
             await page.OpenPausedRecommendationsAsync();
+            page.SwitchPausedTab(1);
             page.HandlePausedRecommendationKey(VirtualKey.A, false);
             Check(page._wantsPlayback && page.openedVideo == null && !page._pausedRecommendationsVisible,
                 "Selecting the current episode resumes without opening a new source");

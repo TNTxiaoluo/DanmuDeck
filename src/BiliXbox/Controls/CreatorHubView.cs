@@ -166,7 +166,7 @@ namespace BiliXbox.Controls
             {
                 var element = e.ClickedItem as FrameworkElement;
                 var item = element?.Tag as CreatorDynamicItem;
-                if (item != null) Run(() => OpenDynamicAsync(item));
+                if (item != null) ActivateDynamic(item);
             };
             Add(_browse, _dynamicList, 1, 0);
             _pager = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14, HorizontalAlignment = HorizontalAlignment.Center };
@@ -454,12 +454,23 @@ namespace BiliXbox.Controls
                 _dynamicHasMore = result.HasMore && !string.IsNullOrEmpty(_dynamicOffset) && _dynamicOffset != offset;
                 _dynamicsLoaded = true;
                 DynamicsLoaded?.Invoke(result.Items);
-                SetBrowseNotice(HubPane.Dynamics, (_dynamics.Count == 0 ? "暂未读取到公开动态。" : "已加载 " + _dynamics.Count + " 条动态，按 A 查看全文和评论。") + " " + result.Notice
+                SetBrowseNotice(HubPane.Dynamics, (_dynamics.Count == 0 ? "暂未读取到公开动态。" : "已加载 " + _dynamics.Count + " 条动态，视频动态按 A 直接播放，其他动态按 A 查看全文和评论。") + " " + result.Notice
                     + (result.HasMore && !_dynamicHasMore ? " 平台未提供新的分页位置，可刷新重试。" : ""));
             }
             catch (OperationCanceledException) when (owner.IsCancellationRequested) { }
             catch (Exception ex) { if (Current(owner)) SetBrowseNotice(HubPane.Dynamics, "动态加载失败：" + Friendly(ex) + "。可选择刷新重试。"); }
             finally { if (Current(owner)) { _dynamicsBusy = false; UpdateActions(); } }
+        }
+
+        // A dynamic that is itself a video post opens the player directly. Its
+        // comments are the video's comments, reachable from the player drawer.
+        // Text, image and repost dynamics keep the full-text and comment view.
+        private void ActivateDynamic(CreatorDynamicItem item)
+        {
+            if (item == null) return;
+            if (item.Video != null && !string.IsNullOrWhiteSpace(item.Video.Bvid))
+            { DynamicViewed?.Invoke(item); RequestVideo(item.Video); return; }
+            Run(() => OpenDynamicAsync(item));
         }
 
         private async Task OpenDynamicAsync(CreatorDynamicItem item)

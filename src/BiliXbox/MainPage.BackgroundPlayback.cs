@@ -62,7 +62,7 @@ namespace BiliXbox
                         finally { _backgroundSourceSwitch = false; }
                     }
                     if (_disposed || revision != _backgroundRevision) return;
-                    await ResetPlaybackDisplayAsync();
+                    await ResetPlaybackDisplayAsync(true);
                 }
                 else
                 {

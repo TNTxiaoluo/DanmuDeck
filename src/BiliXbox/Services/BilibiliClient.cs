@@ -51,6 +51,10 @@ namespace BiliXbox.Services
         public UserProfile CurrentUser { get; private set; }
         public bool IsLoggedIn => CurrentUser != null && !string.IsNullOrEmpty(_cookies.GetCookieValue("SESSDATA"));
         public event Action<string> PlaybackDiagnostic;
+        // Optional diagnostic hook given each playurl response (the app installs
+        // the Dolby Vision probe); offline tests leave it unset.
+        internal static Action<JToken, Action<string>> PlaybackCatalogueProbe { get; set; }
+        internal static bool DolbyVisionHlgFfmpegEnabled { get; set; } = true;
 
         private void PublishPlaybackDiagnostic(string text)
         {
@@ -72,7 +76,16 @@ namespace BiliXbox.Services
             _http.DefaultRequestHeaders.TryAppendWithoutValidation("User-Agent", UserAgent);
             _http.DefaultRequestHeaders.Referer = new Uri(Referer);
             _http.DefaultRequestHeaders.TryAppendWithoutValidation("Accept", "application/json, text/plain, */*");
+            InitializeWebFingerprint();
         }
+
+        // Implemented in BilibiliClient.OfflineProfile.cs (app LocalSettings).
+        partial void LoadOfflineProfile(ref UserProfile profile);
+        partial void SaveOfflineProfile(UserProfile profile);
+        // Website device fingerprint (buvid4, bili_ticket) before account writes;
+        // set by BilibiliClient.WebFingerprint.cs in the app build.
+        private Func<CancellationToken, Task> WebFingerprint { get; set; }
+        partial void InitializeWebFingerprint();
 
         public async Task InitializeAsync()
         {
@@ -81,8 +94,21 @@ namespace BiliXbox.Services
             try
             {
                 await _cookies.LoadAsync();
-                await RefreshProfileAsync(CancellationToken.None);
-                if (IsLoggedIn) await _cookies.SaveAsync();
+                try { await RefreshProfileAsync(CancellationToken.None); }
+                catch (Exception ex) when (!(ex is OutOfMemoryException))
+                {
+                    // Offline start (no network): keep the saved session's last
+                    // confirmed profile so offline-cached videos stay reachable.
+                    // A real sign-out (-101) never reaches here.
+                    UserProfile cached = null;
+                    LoadOfflineProfile(ref cached);
+                    long cookieMid;
+                    if (cached == null || string.IsNullOrEmpty(_cookies.GetCookieValue("SESSDATA"))
+                        || !long.TryParse(_cookies.GetCookieValue("DedeUserID"), out cookieMid) || cookieMid != cached.Mid) throw;
+                    CurrentUser = cached;
+                    return;
+                }
+                if (IsLoggedIn) { SaveOfflineProfile(CurrentUser); await _cookies.SaveAsync(); }
             }
             finally { _sessionGate.Release(); }
         }
@@ -439,7 +465,11 @@ namespace BiliXbox.Services
                 Owner = basic.Owner, OwnerMid = basic.OwnerMid, OwnerAvatarUrl = basic.OwnerAvatarUrl,
                 PlayText = basic.PlayText, DurationText = basic.DurationText,
                 Description = Str(data, "desc"), Cid = Number(data, "cid"), Parts = parts,
-                ReplyCount = OptionalCount(data["stat"]?["reply"])
+                ReplyCount = OptionalCount(data["stat"]?["reply"]),
+                ViewCount = OptionalCount(data["stat"]?["view"]), DanmakuCount = OptionalCount(data["stat"]?["danmaku"]),
+                LikeCount = OptionalCount(data["stat"]?["like"]), CoinCount = OptionalCount(data["stat"]?["coin"]), FavoriteCount = OptionalCount(data["stat"]?["favorite"]),
+                PublishTime = Number(data, "pubdate") > 0 ? DateTimeOffset.FromUnixTimeSeconds(Number(data, "pubdate")) : (DateTimeOffset?)null,
+                Statement = Str(data["argue_info"], "argue_msg"), NoReprint = Number(data["rights"], "no_reprint") == 1
             };
             if (detail.Cid <= 0 && parts.Count > 0) detail.Cid = parts[0].Cid;
             if (detail.Aid <= 0 || detail.Cid <= 0)
@@ -534,11 +564,19 @@ namespace BiliXbox.Services
             if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
             var dash = data["dash"];
             var rawVideos = dash?["video"] as JArray ?? new JArray();
+            // Dolby Vision tracks pass the prefilter only after the HDMI
+            // connection has offered a Dolby Vision mode in this session (sticky:
+            // the TV may stop listing it while another HDR mode is active).
+            if (!DashManifestBuilder.DolbyVisionOutputAvailable && rawVideos.Any(DashManifestBuilder.IsDolbyVision)
+                && PlaybackCodecSupport.CaptureDisplayModes().HasDolbyVisionMode)
+                DashManifestBuilder.DolbyVisionOutputAvailable = true;
+            await CheckDolbyVisionProfile8Async(rawVideos, ct);
             var videos = rawVideos
                 .Where(track => PlaybackVideoRejectionReason(track).Length == 0).Where(track => Number(track, "id") > 0).ToList();
             var capabilities = await FilterPlaybackCapabilitiesAsync(data, videos, ct);
             if (!SessionMatches(playbackEpoch, playbackMid, playbackSession)) throw new OperationCanceledException("播放请求期间账号已改变。", ct);
             PublishTrackCatalogue(data, capabilities, quality);
+            try { PlaybackCatalogueProbe?.Invoke(data, PublishPlaybackDiagnostic); } catch (Exception) { /* Diagnostics never break playback. */ }
             // Only probe AV1 when an explicit UHD request has no usable track
             // and the platform has advertised that tier. Never advertise AV1
             // on faith or repeatedly retry a denied playback request.
@@ -629,6 +667,50 @@ namespace BiliXbox.Services
             return compatible;
         }
 
+        // Profile 8 Dolby Vision tracks look like plain HEVC. Read their small
+        // initialization segment to learn the base layer: only an HDR10 base
+        // (compatibility id 1) is playable on Xbox. Unreadable means hidden.
+        private async Task CheckDolbyVisionProfile8Async(JArray rawVideos, CancellationToken ct)
+        {
+            foreach (var track in rawVideos.Where(DashManifestBuilder.IsDolbyVisionProfile8).Take(2))
+            {
+                if (track.Annotation<DashManifestBuilder.DolbyVisionCompatibilityCheck>() != null) continue;
+                var check = new DashManifestBuilder.DolbyVisionCompatibilityCheck();
+                try
+                {
+                    var segment = track["SegmentBase"] ?? track["segment_base"];
+                    var parts = (Str(segment, "Initialization") + Str(segment, "initialization")).Split('-');
+                    ulong first, last;
+                    Uri uri;
+                    if (parts.Length == 2 && ulong.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out first)
+                        && ulong.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out last)
+                        && last >= first && last - first < 65536
+                        && Uri.TryCreate(DashManifestBuilder.Url(track), UriKind.Absolute, out uri) && uri.Scheme == "https")
+                    {
+                        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                        using (var request = new HttpRequestMessage(HttpMethod.Get, uri))
+                        {
+                            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                            request.Headers.TryAppendWithoutValidation("Range", "bytes=" + first + "-" + last);
+                            using (var response = await _http.SendRequestAsync(request, HttpCompletionOption.ResponseContentRead).AsTask(timeout.Token))
+                            {
+                                var buffer = await response.Content.ReadAsBufferAsync().AsTask(timeout.Token);
+                                var init = buffer.ToArray();
+                                check.Compatibility = DashManifestBuilder.DolbyVisionCompatibility(init);
+                                check.HlgPatchable = check.Compatibility == 4 && DashManifestBuilder.FindHlgTransferPatch(init) != null;
+                            }
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception) { /* Unconfirmed base layers stay hidden. */ }
+                track.AddAnnotation(check);
+                PublishPlaybackDiagnostic("dolby-vision-profile8 compat=" + check.Compatibility
+                    + " hlgPatchable=" + check.HlgPatchable + " codec=" + SafePlaybackCodec(Str(track, "codecs"))
+                    + " playable=" + DashManifestBuilder.IsDolbyVisionBaseLayer(track));
+            }
+        }
+
         private static string PlaybackVideoRejectionReason(JToken track)
             => !ClearPlaybackAudio(track) ? "轨道需要当前播放器未实现的版权保护"
                 : DashManifestBuilder.VideoRejectionReason(track);
@@ -637,7 +719,10 @@ namespace BiliXbox.Services
             ISet<JToken> hardwareHevc)
         {
             var all = tracks.ToList();
-            var eligible = all.Where(track => EffectivePlaybackQuality(track) <= requestedQuality).ToList();
+            // Experimental Dolby Vision is only played when explicitly chosen,
+            // never as the automatic "highest quality".
+            var eligible = all.Where(track => EffectivePlaybackQuality(track) <= requestedQuality
+                && (requestedQuality == 126 || (!DashManifestBuilder.IsDolbyVision(track) && !DashManifestBuilder.IsDolbyVisionBaseLayer(track)))).ToList();
             if (eligible.Count == 0)
             {
                 int minimum = all.Min(EffectivePlaybackQuality);
@@ -651,6 +736,7 @@ namespace BiliXbox.Services
                 .ThenBy(track => DashManifestBuilder.IsHdr10(track) == (requestedQuality == 125) ? 0 : 1)
                 .ThenByDescending(track => Number(track, "bandwidth"));
         }
+
 
         private sealed class SdrToneMappedPlaybackTrack
         {
@@ -702,6 +788,17 @@ namespace BiliXbox.Services
                 if (candidates.Count >= 15) break;
             }
             if (candidates.Count > 15) candidates.RemoveRange(15, candidates.Count - 15);
+            // After an HDR10-output failure, try the same source under SDR
+            // system tone mapping before any other track. Its result separates
+            // "this stream cannot be decoded" from "HDR10 output path failed".
+            bool hdrOutputFirst = candidates.Count > 1 && DashManifestBuilder.IsHdr10(candidates[0])
+                && candidates[0].Annotation<SdrToneMappedPlaybackTrack>() == null;
+            if (hdrOutputFirst)
+            {
+                int toneMapped = candidates.FindIndex(1, track => ReferenceEquals(OriginalPlaybackTrack(track), candidates[0])
+                    && track.Annotation<SdrToneMappedPlaybackTrack>() != null);
+                if (toneMapped > 1) { var moved = candidates[toneMapped]; candidates.RemoveAt(toneMapped); candidates.Insert(1, moved); }
+            }
             PublishPlaybackDiagnostic("candidate-plan qn=" + requestedQuality + " sameTier=" + sameTier.Count
                 + " sameTierBudget=" + sameTierBudget + " attempts=" + candidates.Count
                 + " omittedByBudget=" + Math.Max(0, sameTier.Count - sameTierBudget));
@@ -721,6 +818,16 @@ namespace BiliXbox.Services
                         rawVideos, capabilities.HardwareHevc.Contains(track), capabilities.FourKDisplay.Contains(track),
                         capabilities.Hdr10Display.Contains(track), capabilities.BlockedQualities, capabilities.UnknownQualities, capabilities.Diagnostic);
                     candidate.AudioFallback.CodecFallback = next;
+                }
+                if (DolbyVisionHlgFfmpegEnabled && candidate.DolbyVisionHlgAsSdr)
+                {
+                    var trial = CreateDashPlayback(data, track, selectedAudio, duration, requestedQuality, provided, rawVideos,
+                        capabilities.HardwareHevc.Contains(track), capabilities.FourKDisplay.Contains(track), true,
+                        capabilities.BlockedQualities, capabilities.UnknownQualities, capabilities.Diagnostic);
+                    trial.IsHdr10 = trial.DolbyVisionHlgFfmpeg = true;
+                    trial.DolbyVisionHlgAsSdr = false;
+                    trial.CodecFallback = candidate;
+                    candidate = trial;
                 }
                 next = candidate;
             }
@@ -774,7 +881,10 @@ namespace BiliXbox.Services
                 FourKDisplayVerified = fourKDisplayVerified,
                 AllowsScaledSdrOutput = data.Annotation<PlaybackTrackCapabilities>()?.ScaledSdr.Contains(selected) == true,
                 Hdr10DisplayVerified = hdr10DisplayVerified,
-                IsHdr10 = DashManifestBuilder.IsHdr10(selected),
+                IsHdr10 = DashManifestBuilder.IsHdr10(selected) || (DashManifestBuilder.IsDolbyVisionBaseLayer(selected) && !DashManifestBuilder.IsDolbyVisionHlgBaseLayer(selected)),
+                DolbyVisionHlgAsSdr = DashManifestBuilder.IsDolbyVisionHlgBaseLayer(selected),
+                IsDolbyVision = DashManifestBuilder.IsDolbyVision(selected),
+                DolbyVisionBaseLayer = DashManifestBuilder.IsDolbyVisionBaseLayer(selected),
                 UsesSdrToneMapping = toneMapped,
                 VideoBitsPerChannel = VideoBitsPerChannel(selected), CapabilityDiagnostic = capabilityDiagnostic
             };
@@ -1071,6 +1181,40 @@ namespace BiliXbox.Services
                     {
                     int id = (int)Number(track, "id");
                     bool uhd = IsTrueUhdVideo(track), hdr = DashManifestBuilder.IsHdr10(track);
+                    if (DashManifestBuilder.IsDolbyVision(track))
+                    {
+                        // Xbox answers NotSupported to every protection query,
+                        // including HDR10 tracks that play. The HDMI Dolby Vision
+                        // mode (checked by the prefilter) and a real decode attempt
+                        // decide; a failure falls back to the next candidate.
+                        checks[0] = "trial"; checks[2] = "dolby-vision-mode";
+                        trackLog.Add("杜比视界=实验性试播", "dolby-vision codec=" + SafePlaybackCodec(Str(track, "codecs")) + " route=split-fmp4 decision=trial");
+                        result.Allowed.Add(track);
+                        if (uhd) result.FourKDisplay.Add(track);
+                        continue;
+                    }
+                    if (DashManifestBuilder.IsDolbyVisionBaseLayer(track))
+                    {
+                        // Profile 8.1: HDR10 base layer under HDR output, so it needs
+                        // an HDR10-capable HDMI mode like qn 125. Profile 8.4: HLG
+                        // base layer relabelled BT.2020 SDR, shown in SDR.
+                        bool hlg = DashManifestBuilder.IsDolbyVisionHlgBaseLayer(track);
+                        if (!hlg && outputModes.IsXbox && outputModes.EnumerationSucceeded && !outputModes.HasHdr10Mode)
+                        {
+                            result.BlockedQualities[id] = "该设备不支持 HDR 显示";
+                            result.RejectedTracks[track] = result.BlockedQualities[id];
+                            continue;
+                        }
+                        checks[0] = "trial"; checks[2] = hlg ? "sdr-mode" : "hdr10-mode";
+                        trackLog.Add(hlg ? "杜比视界 Profile 8.4=以 SDR 兼容画面试播" : "杜比视界 Profile 8.1=以 HDR10 基础层试播",
+                            "dolby-vision-base-layer codec=" + SafePlaybackCodec(Str(track, "codecs")) + " base=" + (hlg ? "hlg-as-sdr" : "hdr10") + " route=split-fmp4 decision=trial");
+                        result.Allowed.Add(track);
+                        result.HardwareHevc.Add(track);
+                        if (!hlg) result.Hdr10Display.Add(track);
+                        if (uhd) result.FourKDisplay.Add(track);
+                        if (hlg && outputModes.IsXbox) result.ScaledSdr.Add(track);
+                        continue;
+                    }
                     bool highTier = id == 120 || id == 127;
                     if (highTier && !HasUhdDimensions(track, id == 127 ? 7680 : 3840, id == 127 ? 4320 : 2160))
                     {
@@ -1471,7 +1615,11 @@ namespace BiliXbox.Services
                     : playback.QualityFailure == PlaybackQualityFailure.DeviceUnsupported ? "设备不支持返回轨道的编码或显示要求"
                     : playback.QualityFailure == PlaybackQualityFailure.CapabilityUnconfirmed ? "设备能力尚未确认"
                     : "返回轨道的分辨率、格式或分段信息不符合播放要求";
-                playback.QualityNotice = "已请求 " + target + "，" + cause + "，实际播放 " + playback.Quality + "。";
+                // A preferred tier this video does not offer at all (for example a
+                // remembered 4K or HDR default on an HD-only upload) is the ordinary
+                // highest-available fallback, not a failure worth a notice.
+                bool ordinaryFallback = playback.QualityFailure == PlaybackQualityFailure.ServerNotReturned && requested == null;
+                playback.QualityNotice = ordinaryFallback ? "" : "已请求 " + target + "，" + cause + "，实际播放 " + playback.Quality + "。";
                 if (requested != null && !requested.IsAvailable && requested.Reason.Length > 0)
                     playback.QualityNotice += requested.Reason + "。";
             }
@@ -1779,7 +1927,12 @@ namespace BiliXbox.Services
                     Cookies = _cookies.CloneForLogin(), Epoch = _loginSessionEpoch,
                     Mid = CurrentUser?.Mid ?? 0, Session = _cookies.GetCookieValue("SESSDATA"), Created = DateTimeOffset.UtcNow
                 };
-                var root = await GetSessionJsonAsync(Passport + "/x/passport-login/web/qrcode/generate", pending.Cookies, ct);
+                // Desktop-client QR login (as the open-source wiliwili client does):
+                // the poll identifies a PC client device, and the resulting
+                // session is accepted for likes, coins and favorites.
+                pending.RequireMid = _reauthorizeMid;
+                pending.Uuid = PrepareDesktopLoginCookies(pending.Cookies);
+                var root = await GetSessionJsonAsync(Passport + "/x/passport-login/web/qrcode/generate?source=main_electron_pc", pending.Cookies, ct);
                 var data = SessionData(root);
                 var result = new QrLoginInfo { Url = Str(data, "url"), Key = Str(data, "qrcode_key") };
                 Uri uri;
@@ -1807,7 +1960,7 @@ namespace BiliXbox.Services
                 if (!_pendingQrLogins.TryGetValue(key, out pending) || pending.Created.AddMinutes(3) < DateTimeOffset.UtcNow
                     || !SessionMatches(pending.Epoch, pending.Mid, pending.Session)) return QrLoginStatus.Expired;
                 var root = await GetSessionJsonAsync(Passport + "/x/passport-login/web/qrcode/poll?qrcode_key="
-                    + Uri.EscapeDataString(key), pending.Cookies, ct);
+                    + Uri.EscapeDataString(key) + "&source=main_electron_pc", pending.Cookies, ct);
                 var data = SessionData(root);
                 if (data["code"] == null) throw new BilibiliApiException(-1, "登录状态响应格式已变化。");
                 var code = (int)Number(data, "code");
@@ -1818,7 +1971,11 @@ namespace BiliXbox.Services
                     case 86038: _pendingQrLogins.Remove(key); return QrLoginStatus.Expired;
                     case 0:
                         pending.Cookies.ImportLoginRedirectCookies(Str(data, "url"));
-                        await CommitLoginSessionAsync(pending.Cookies, pending.Epoch, pending.Mid, pending.Session, ct);
+                        FinishDesktopLoginCookies(pending.Cookies, pending.Uuid);
+                        await CommitLoginSessionAsync(pending.Cookies, pending.Epoch, pending.Mid, pending.Session, ct, pending.RequireMid);
+                        _pendingQrLogins.Remove(key);
+                        _reauthorizeMid = 0;
+                        SaveLoginChannel(CurrentUser?.Mid ?? 0);
                         return QrLoginStatus.Success;
                     default: throw ApiError(code, Str(data, "message"));
                 }
@@ -1839,11 +1996,74 @@ namespace BiliXbox.Services
                     ++_loginSessionEpoch; _pendingQrLogins.Clear();
                     CurrentUser = null;
                     await _cookies.ClearAsync();
+                    SaveLoginChannel(0);
                     _imageKey = _subKey = null;
                 }
                 finally { _videoInteractionGate.Release(); }
             }
             finally { _sessionGate.Release(); }
+        }
+
+        // ---- Desktop-client QR login and one-time re-authorization ----
+        // Modelled on the open-source wiliwili client: the QR poll carries the
+        // desktop client's device cookies (appkey, mobi_app, device, device_id,
+        // device_name, buvid3) with source=main_electron_pc. These identify
+        // the login device only and are removed before the session is saved.
+        private const string DesktopAppKey = "aa1e74ee4874176e";
+        private static readonly string[] DesktopLoginOnlyCookies = { "appkey", "mobi_app", "device", "innersign", "device_id", "device_name" };
+        private long _reauthorizeMid;
+
+        // Implemented in BilibiliClient.OfflineProfile.cs: which UID last
+        // signed in through the desktop-client QR (sessions from older builds
+        // are kept and re-authorized only when an account write needs it).
+        partial void LoadLoginChannel(ref long mid);
+        partial void SaveLoginChannel(long mid);
+
+        public bool NeedsInteractionReauthorization
+        {
+            get
+            {
+                if (!IsLoggedIn) return false;
+                long mid = -1;
+                LoadLoginChannel(ref mid);
+                return mid >= 0 && mid != CurrentUser.Mid;
+            }
+        }
+
+        // The next QR login must be the signed-in account; a different UID is
+        // refused and the existing session stays.
+        public void BeginReauthorization() { _reauthorizeMid = CurrentUser?.Mid ?? 0; }
+        public void EndReauthorization() { _reauthorizeMid = 0; }
+
+        private static string NewHex(int length)
+        {
+            var bytes = new byte[(length + 1) / 2];
+            new Random(Guid.NewGuid().GetHashCode()).NextBytes(bytes);
+            return string.Concat(bytes.Select(b => b.ToString("x2", CultureInfo.InvariantCulture))).Substring(0, length);
+        }
+
+        private static string PrepareDesktopLoginCookies(ProtectedCookieStore cookies)
+        {
+            string uuid = Guid.NewGuid().ToString().ToUpperInvariant()
+                + (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 100000).ToString("D5", CultureInfo.InvariantCulture) + "infoc";
+            cookies.SetClientCookie("appkey", DesktopAppKey, null);
+            cookies.SetClientCookie("mobi_app", "pc_electron", null);
+            cookies.SetClientCookie("device", "mac", null);
+            cookies.SetClientCookie("innersign", "0", null);
+            cookies.SetClientCookie("buvid3", uuid, null);
+            cookies.SetClientCookie("device_id", NewHex(32), null);
+            cookies.SetClientCookie("device_name", "Xbox", null);
+            return uuid;
+        }
+
+        private static void FinishDesktopLoginCookies(ProtectedCookieStore cookies, string uuid)
+        {
+            foreach (var name in DesktopLoginOnlyCookies) cookies.RemoveCookie(name);
+            if (string.IsNullOrEmpty(uuid)) return;
+            var expires = DateTimeOffset.UtcNow.AddYears(1);
+            cookies.SetClientCookie("_uuid", uuid, expires);
+            cookies.SetClientCookie("buvid3", NewHex(32).ToUpperInvariant().Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-")
+                + (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 100000).ToString("D5", CultureInfo.InvariantCulture) + "infoc", expires);
         }
 
         private sealed class PendingQrLogin
@@ -1852,6 +2072,9 @@ namespace BiliXbox.Services
             internal long Epoch, Mid;
             internal string Session;
             internal DateTimeOffset Created;
+            // Re-authorization of the signed-in account: the scanned UID must match.
+            internal long RequireMid;
+            internal string Uuid;
         }
 
         private bool SessionMatches(long epoch, long mid, string session) => epoch == _loginSessionEpoch
@@ -1875,7 +2098,8 @@ namespace BiliXbox.Services
 
         // Called only with _sessionGate held. No account cookie is committed
         // until the isolated session passes a genuine authenticated nav check.
-        private async Task CommitLoginSessionAsync(ProtectedCookieStore candidate, long epoch, long mid, string session, CancellationToken ct)
+        private async Task CommitLoginSessionAsync(ProtectedCookieStore candidate, long epoch, long mid, string session, CancellationToken ct,
+            long requireMid = 0)
         {
             ct.ThrowIfCancellationRequested();
             if (!SessionMatches(epoch, mid, session)) throw new BilibiliApiException(-101, "账号已改变，请重新登录。");
@@ -1883,6 +2107,8 @@ namespace BiliXbox.Services
             if (string.IsNullOrEmpty(candidate.GetCookieValue("SESSDATA")) || string.IsNullOrEmpty(candidate.GetCookieValue("bili_jct"))
                 || !long.TryParse(candidate.GetCookieValue("DedeUserID"), out cookieMid) || cookieMid <= 0)
                 throw new BilibiliApiException(-101, "B站没有返回完整的登录会话，请重新登录。");
+            if (requireMid > 0 && cookieMid != requireMid)
+                throw new BilibiliApiException(-1, "扫码的账号与当前登录的账号不一致，已保留原来的登录。请用当前账号扫码授权。");
             var root = await GetSessionJsonAsync(Api + "/x/web-interface/nav", candidate, ct);
             var data = SessionData(root);
             if (data["isLogin"]?.Value<bool>() != true || Number(data, "mid") != cookieMid)
@@ -1899,7 +2125,7 @@ namespace BiliXbox.Services
                 try { await candidate.SaveAsync(); }
                 catch (Exception ex) when (!(ex is OutOfMemoryException))
                 { throw new BilibiliApiException(-1, "无法加密保存登录会话，请检查存储空间后重试。"); }
-                _cookies.ReplaceWith(candidate); CurrentUser = profile;
+                _cookies.ReplaceWith(candidate); CurrentUser = profile; SaveOfflineProfile(profile);
                 ++_loginSessionEpoch; _pendingQrLogins.Clear();
                 CaptureWbiKeys(data);
             }
@@ -1978,13 +2204,14 @@ namespace BiliXbox.Services
             return ParseJson(await SendTextAsync(request, ct));
         }
 
-        private async Task<JObject> PostJsonAsync(string url, IDictionary<string, string> form, CancellationToken ct)
+        private async Task<JObject> PostJsonAsync(string url, IDictionary<string, string> form, CancellationToken ct, string referer = null)
         {
             var request = new HttpRequestMessage(HttpMethod.Post, new Uri(url))
             {
                 Content = new HttpFormUrlEncodedContent(form)
             };
             request.Headers.TryAppendWithoutValidation("Origin", "https://www.bilibili.com");
+            if (referer != null) request.Headers.Referer = new Uri(referer);
             return ParseJson(await SendTextAsync(request, ct));
         }
 

@@ -1,5 +1,23 @@
 # 播放诊断与 Xbox 验证
 
+## 2026-11-25 · Xbox HDR10 解码失败
+
+Xbox 上安装的是 `1.0.41.0`。测试视频为 `BV1R1e4zKEh1`、`CID 31870356198`，选择 HDR 真彩后，轨道 0（`qn=125`，3840×2160，`hvc1.2.4.L153.90`，10bit）的各项前置检查都已通过：10bit 解码查询返回 `Probably`，HDR10 输出查询返回 `Supported`，`display-prepare-ready action=request range=HDR10 mode=3840×2160 59.94Hz` 成功。之后 SIDX 按已知流程经 `index-compat` 转换。`media-opened` 大约 1 秒后，记录到 `native-media-error error=DecodingError hresult=80004002`（E_NOINTERFACE），随后回退到同一视频的 `qn=120` hev1 8bit SDR 轨道，这条轨道能正常播放。关闭网络加速（`acceleration=off`）后连续复现两次，因此可以排除并行 Range 拼接。
+
+这些日志只能说明失败发生在原生解码或渲染阶段，尚不能区分以下三种原因：MPD 中的 CICP 色彩声明、HDR10 输出路径，或 Xbox 无法解码这条码流本身。诊断测试包在 HDR10 解码失败后依次尝试：
+
+1. 同一轨道，仍使用 HDR10 输出，但 MPD 不写 CICP 声明，色彩信息只来自 HEVC 码流自带的 VUI/SEI。日志字段为 `manifestColor=stream-only`，候选记录为 `candidate-hdr-retry`。
+2. 同一 HDR10 轨道以 SDR 色调映射播放（`outputRange=SDR-tone-mapped`）。
+3. 上述两项都失败时，按原有顺序回退到原生 SDR 4K，再到更低画质。
+
+`1.0.43.0` 的实测结果是第 1、2 步都以同一个 `DecodingError 80004002` 失败，原生 SDR 4K 能播放。SDR 色调映射也失败，说明问题在 Xbox 解码这条 Main10 码流本身，与 HDR10 输出路径无关。后续测试包在 `index-compat` 阶段读取视频初始化分段，写入 `init-structure` 记录：样本条目类型（hvc1/hev1/dvh1）、`hvcC` 的 profile、位深和参数集数量、`colr`，以及是否存在 `dvcC`/`dvvC`。
+
+`1.0.45.0` 起改用后台探针。不连接画面控件的帧服务器播放器同样立即失败，排除了画面控件。`1.0.46.0` 的对照结果：同一视频文件作为普通分段 MP4（`MediaSource.CreateFromStream`）播放时能正常解码，0.9 秒出第一帧，2 秒解出 120 帧，识别为 3840×2160、59.94fps；经 AdaptiveMediaSource 播放时，无论清单编码写成 `hvc1` 还是 `hev1.*` 都失败，并把帧率识别为 30fps。结论是 Xbox 上的 AdaptiveMediaSource 无法处理 HEVC Main10。
+
+修复方式：HDR10 片源改为分离播放。视频文件经 `HttpRandomAccessStream` 作为普通 MP4 交给主播放器，音频文件由 `SplitAudioFollower` 用第二个播放器跟随主播放器的时钟。日志记录为 `split-source-open-attempt/ready transport=split-mp4`，音频失败记录为 `split-audio-failed`。此路径不使用网络加速。
+
+（以下为排查过程中曾使用的判断方法，诊断重试已移除。）第 1 步成功，说明问题出在 CICP 声明；第 1 步失败但第 2 步成功，说明问题出在 HDR10 输出路径；两步都失败，说明 Xbox 无法解码这条码流。HDMI 准备失败时不尝试第 1 步，因为它需要同一个 HDR10 输出。
+
 ## 2026-11-20 · Xbox Series S 分段诊断
 
 录像对应 `BV1pXnu6nE6c`、`CID 42839901042` 的 3840×2160 HEVC 轨道。Device Portal 取回的 `1.0.39.0` 日志确认，最初使用并行 Range，画面还在 150.379 秒且已有 6.63 秒缓冲时发生一次播放器管线重建。重建后由系统原生下载，录像中播放器停在 159.936 秒的长卡顿发生在这一阶段。
@@ -257,6 +275,7 @@ Issue #1 的测试片 `BV11tW66UEgq` 公开目录列有 `126` 杜比视界和 `1
 
 - `playback-diagnostics.log`
 - `playback-diagnostics.previous.log`（发生轮转后才存在）
+- 开发版另写 `playback-ranges.log` 和 `playback-ranges.previous.log`，只保存并行 Range 的逐段传输记录。这些记录不再占用主日志，轨道选择和解码错误能保留更久。
 
 日志在后台写入，并限制单条、队列和文件大小。包括请求参数、画质列表、权限标记、每条轨道的尺寸/编码/帧率/码率/位深、被排除原因、微软能力查询，以及原生播放器实际打开后的 `native=宽x高`。特殊帧率路径还记录接口、查询与原生帧率及校验/试播状态。不保存完整 API JSON、媒体地址、Cookie、密码或账号 ID。请等播放设置更新完成后再下载日志，按时间对照操作。
 

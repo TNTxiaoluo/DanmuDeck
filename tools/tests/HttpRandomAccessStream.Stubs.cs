@@ -18,6 +18,8 @@ namespace System.Runtime.InteropServices.WindowsRuntime {
   public static global::Windows.Foundation.IAsyncOperation<T> Run<T>(System.Func<System.Threading.CancellationToken,System.Threading.Tasks.Task<T>> fn){return new global::Windows.Foundation.Operation<T,uint>(fn(System.Threading.CancellationToken.None));}
  }
  public static class Extensions {
+  public static byte[] ToArray(this global::Windows.Storage.Streams.IBuffer source){var data=new byte[source.Length];System.Buffer.BlockCopy(((global::Windows.Storage.Streams.Buffer)source).Data,0,data,0,(int)source.Length);return data;}
+  public static void CopyTo(this byte[] source,int sourceIndex,global::Windows.Storage.Streams.IBuffer destination,uint destinationIndex,int count){if(destinationIndex+(uint)count>destination.Capacity)throw new System.ArgumentOutOfRangeException();System.Buffer.BlockCopy(source,sourceIndex,((global::Windows.Storage.Streams.Buffer)destination).Data,(int)destinationIndex,count);}
   public static System.Threading.Tasks.Task<T> AsTask<T>(this global::Windows.Foundation.IAsyncOperation<T> operation,System.Threading.CancellationToken token){token.ThrowIfCancellationRequested();return operation.Task;}
   public static void CopyTo(this global::Windows.Storage.Streams.IBuffer source,uint offset,global::Windows.Storage.Streams.IBuffer destination,uint index,uint count){if(offset+count>source.Length||index+count>destination.Capacity)throw new System.ArgumentOutOfRangeException();System.Buffer.BlockCopy(((global::Windows.Storage.Streams.Buffer)source).Data,(int)offset,((global::Windows.Storage.Streams.Buffer)destination).Data,(int)index,(int)count);}
  }
@@ -44,7 +46,8 @@ namespace Windows.Web.Http.Headers {
 namespace Windows.Web.Http.Filters {
  public enum HttpCacheReadBehavior{NoCache} public enum HttpCacheWriteBehavior{NoCache}
  public sealed class HttpCacheControl{public HttpCacheReadBehavior ReadBehavior{get;set;}public HttpCacheWriteBehavior WriteBehavior{get;set;}}
- public sealed class HttpBaseProtocolFilter:System.IDisposable{public bool AutomaticDecompression{get;set;}public HttpCacheControl CacheControl=new HttpCacheControl();public void Dispose(){}}
+ public interface IHttpFilter{}
+ public sealed class HttpBaseProtocolFilter:IHttpFilter,System.IDisposable{public bool AutomaticDecompression{get;set;}public HttpCacheControl CacheControl=new HttpCacheControl();public void Dispose(){}}
 }
 namespace Windows.Web.Http {
  public enum HttpStatusCode{Ok=200,PartialContent=206,Forbidden=403}
@@ -56,7 +59,7 @@ namespace Windows.Web.Http {
  }
  public sealed class HttpResponseMessage:System.IDisposable{public HttpStatusCode StatusCode;public Content Content=new Content();public void EnsureSuccessStatusCode(){if((int)StatusCode<200||(int)StatusCode>=300)throw new System.IO.IOException("HTTP status");}public void Dispose(){}}
  public sealed class HttpClient:System.IDisposable {
-  private bool _disposed;public Headers.HttpRequestHeaderCollection DefaultRequestHeaders=new Headers.HttpRequestHeaderCollection();public HttpClient(Filters.HttpBaseProtocolFilter filter){BiliXbox.StreamTests.Transport.LiveClients++;}
+  private bool _disposed;public Headers.HttpRequestHeaderCollection DefaultRequestHeaders=new Headers.HttpRequestHeaderCollection();public HttpClient(Filters.IHttpFilter filter){BiliXbox.StreamTests.Transport.LiveClients++;}
   public global::Windows.Foundation.IAsyncOperationWithProgress<HttpResponseMessage,uint> SendRequestAsync(HttpRequestMessage request,HttpCompletionOption option){if(_disposed)throw new System.ObjectDisposedException("client");if(DefaultRequestHeaders.Referer.AbsoluteUri!="https://www.bilibili.com/")throw new System.Exception("Missing Referer");if(!DefaultRequestHeaders.Values.ContainsKey("User-Agent"))throw new System.Exception("Missing User-Agent");var result=BiliXbox.StreamTests.Transport.AsyncHandler!=null?BiliXbox.StreamTests.Transport.AsyncHandler(request):System.Threading.Tasks.Task.FromResult(BiliXbox.StreamTests.Transport.Handler(request));return new global::Windows.Foundation.Operation<HttpResponseMessage,uint>(result);}public void Dispose(){if(!_disposed){_disposed=true;BiliXbox.StreamTests.Transport.LiveClients--;}}
  }
 }
@@ -86,6 +89,12 @@ namespace BiliXbox.StreamTests {
    Verify(await Read(clone,32),0,32,"clone bytes");Assert(stream.Position==sourcePosition,"clone independent position");
    var at=stream.GetInputStreamAt((ulong)block*2+7);Verify(await Read(at,101),block*2+7,101,"input at offset");Assert(stream.Position==sourcePosition,"input offset independent position");at.Dispose();
    try{var invalidRead=stream.ReadAsync(new Buffer(1),2,InputStreamOptions.None);throw new System.Exception("No bounds error");}catch(System.ArgumentOutOfRangeException){_passed++;}
+   {var tail=new byte[]{9,8,7,6,5};int fileLength=Transport.File.Length;stream.AppendTail(tail);var tailClone=stream.CloneStream();
+    Assert(stream.Size==(ulong)fileLength+5&&tailClone.Size==stream.Size,"virtual tail extends the size seen by every later clone");
+    tailClone.Seek((ulong)fileLength-3);var across=await Read(tailClone,8);var acrossData=((Buffer)across).Data;
+    Assert(across.Length==8&&acrossData[0]==Transport.File[fileLength-3]&&acrossData[2]==Transport.File[fileLength-1]&&acrossData[3]==9&&acrossData[7]==5,"a read across the end of the file continues into the virtual tail");
+    tailClone.Seek((ulong)fileLength+4);var last=await Read(tailClone,10);Assert(last.Length==1&&((Buffer)last).Data[0]==5,"reads inside the tail stop at the virtual end");
+    tailClone.Dispose();}
    stream.Dispose();Assert(!stream.CanRead,"disposed state");
    clone.Seek((ulong)Transport.File.Length-9);Verify(await Read(clone,64),Transport.File.Length-9,9,"clone survives source dispose and seek EOF");Assert((await Read(clone,64)).Length==0,"EOF empty");clone.Dispose();
    Transport.Reset(123);Transport.Handler=r=>new HttpResponseMessage{StatusCode=HttpStatusCode.Ok,Content=new Content{Data=Transport.File,Headers=new HttpContentHeaderCollection{ContentLength=123}}};

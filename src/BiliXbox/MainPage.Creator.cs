@@ -88,6 +88,7 @@ namespace BiliXbox
             _creatorVisible = false;
             _videoReturnsToCreator = false;
             CreatorHub.Visibility = Visibility.Collapsed;
+            if (ReturnCreatorToLibrary()) return;
             var bookmark = _creatorReturn;
             _creatorReturn = null;
             if (bookmark == null) { GoHome(); return; }
@@ -117,6 +118,7 @@ namespace BiliXbox
         private void ClearCreatorNavigation()
         {
             _videoReturnsToCreator = false;
+            _creatorReturnsToLibrary = false;
             _creatorReturn = null;
             _creatorMid = 0;
             if (!_creatorVisible) return;

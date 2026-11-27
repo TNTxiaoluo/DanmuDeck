@@ -1,3 +1,9 @@
+namespace BiliXbox.Services
+{
+    // Per-source HDMI rules are exercised by default; follow-system checks
+    // switch this flag explicitly.
+    internal static class HdmiOutputSettings { internal static bool FollowSystem = false; }
+}
 // Test-only platform doubles. These do not establish real HDMI/TV capabilities.
 namespace Windows.System.Profile
 {
@@ -110,8 +116,68 @@ namespace BiliXbox.PlaybackDisplayTests
             await RepeatedPreparation();
             await FalseAndCleanup();
             await CancellationAndSerialization();
+            await FollowSystemMode();
             return "PASS: " + _checks + " production HDMI selection, HDR/SDR, no120Hz, cancellation and reset ownership assertions (test platform, no device mode changes).";
         }
+        private static async Task FollowSystemMode()
+        {
+            Services.HdmiOutputSettings.FollowSystem = true;
+            var delay = Services.PlaybackDisplayController.FollowSystemRestoreDelay;
+            Services.PlaybackDisplayController.FollowSystemRestoreDelay = TimeSpan.FromMilliseconds(300);
+            try
+            {
+                var system = Mode(1920, 1080, 59.94);
+                var hdr4K = Mode(hdr: true); var hdr1080 = Mode(1920, 1080, 59.94, true); var hdr1080at60 = Mode(1920, 1080, 60, true);
+                var device = Device(Mode(), Mode(1920, 1080, 60), system, hdr4K, hdr1080at60, hdr1080);
+                device.CurrentMode = system;
+                device.Reset = () => { device.CurrentMode = system; return Task.CompletedTask; };
+                var controller = new Services.PlaybackDisplayController();
+                Check(await controller.PrepareAsync(Stream(), CancellationToken.None) && device.Requests == 0 && device.Resets == 0
+                    && !controller.FourKActive && controller.Diagnostic.StartsWith("action=follow-system-keep range=SDR"),
+                    "a 4K SDR video keeps the 1080p 59.94Hz system mode and is scaled by the player");
+                Check(await controller.PrepareAsync(Stream(1920, 1080, 60), CancellationToken.None) && device.Requests == 0,
+                    "a 60fps SDR video does not change the system refresh rate");
+                Check(await controller.PrepareAsync(Stream(hdr: true, fps: 60), CancellationToken.None)
+                    && device.Requests == 1 && device.RequestedMode == hdr1080 && device.RequestedOption == HdmiDisplayHdrOption.Eotf2084
+                    && controller.Hdr10Active && !controller.FourKActive,
+                    "an HDR10 video requests HDR10 at the system resolution and refresh rate, not the video's 4K/60");
+                Check(await controller.PrepareAsync(Stream(1920, 1080, 30, hdr: true), CancellationToken.None)
+                    && device.Requests == 1 && controller.Hdr10Active && controller.Diagnostic.StartsWith("action=follow-system-keep range=HDR10"),
+                    "a second HDR10 video at another resolution or frame rate skips the identical mode");
+                var pending = controller.ResetAsync();
+                Check(device.Resets == 0 && device.CurrentMode == hdr1080, "leaving an HDR video waits before restoring SDR");
+                Check(await controller.PrepareAsync(Stream(hdr: true), CancellationToken.None) && device.Requests == 1, "HDR within the grace period keeps the mode");
+                await pending;
+                Check(device.Resets == 0 && device.CurrentMode == hdr1080, "a new preparation cancels the pending SDR restore");
+                Check(await controller.PrepareAsync(Stream(), CancellationToken.None) && device.Resets == 1 && device.CurrentMode == system
+                    && device.Requests == 1 && !controller.Hdr10Active && controller.Diagnostic.StartsWith("action=follow-system-sdr-restore"),
+                    "an SDR video after HDR returns to the system mode, the only SDR switch");
+                await controller.PrepareAsync(Stream(hdr: true), CancellationToken.None);
+                await controller.ResetAsync();
+                Check(device.Resets == 2 && device.CurrentMode == system, "after the grace period the UI returns to the system SDR mode");
+                await controller.ResetAsync();
+                Check(device.Resets == 2, "an SDR system mode needs no restore");
+
+                var only4KHdr = Device(Mode(1920, 1080, 60), Mode(hdr: true));
+                only4KHdr.CurrentMode = Mode(1920, 1080, 60);
+                var closest = new Services.PlaybackDisplayController();
+                Check(await closest.PrepareAsync(Stream(hdr: true), CancellationToken.None) && only4KHdr.RequestedOption == HdmiDisplayHdrOption.Eotf2084
+                    && closest.Diagnostic.Contains("resolution=closest"),
+                    "without HDR10 at the system resolution, the closest HDR10 mode at the system refresh rate is used");
+
+                var sdrOnly = Device(Mode(), Mode(1920, 1080, 60));
+                sdrOnly.CurrentMode = Mode(1920, 1080, 60);
+                var plain = new Services.PlaybackDisplayController();
+                Check(!await plain.PrepareAsync(Stream(hdr: true), CancellationToken.None) || sdrOnly.RequestedOption != HdmiDisplayHdrOption.Eotf2084,
+                    "a TV without HDR10 never receives an HDR request");
+            }
+            finally
+            {
+                Services.HdmiOutputSettings.FollowSystem = false;
+                Services.PlaybackDisplayController.FollowSystemRestoreDelay = delay;
+            }
+        }
+
         private static async Task NearSixtyFrameRateValidation()
         {
             var device = Device(Mode());

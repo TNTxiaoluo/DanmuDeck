@@ -20,7 +20,7 @@ namespace BiliXbox.Controls
     // as the feed. MainPage continues to own input dispatch, login and playback.
     public sealed partial class AccountLibraryView : UserControl
     {
-        private enum LibraryPane { Overview, History, Folders, Favorites, Follows, Episodes, WatchLater, Activity }
+        private enum LibraryPane { Overview, History, Folders, Favorites, Follows, Episodes, WatchLater, Activity, Offline }
         private sealed class ViewState
         {
             public LibraryPane Pane;
@@ -54,6 +54,13 @@ namespace BiliXbox.Controls
         public event EventHandler CloseRequested;
         public event EventHandler SignOutRequested;
         public event EventHandler SettingsRequested;
+        public event EventHandler ProfileRequested;
+        // true: followers ("粉丝"); false: accounts this user follows.
+        public event Action<bool> RelationsRequested;
+        private readonly Button _profile, _followingButton, _followersButton;
+        private readonly StackPanel _accountActions;
+        private CancellationTokenSource _statsCts;
+        public long AccountMid => _accountMid;
         public event Func<AccountLibraryItem, Task> OpenItemRequested;
 
         public AccountLibraryView()
@@ -80,7 +87,17 @@ namespace BiliXbox.Controls
             var identity = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
             _name = Text("我的账户", 28, true); _name.TextTrimming = TextTrimming.CharacterEllipsis;
             _subtitle = Text("你的内容，继续精彩", 14); _subtitle.Foreground = SecondaryBrush();
-            identity.Children.Add(_name); identity.Children.Add(_subtitle); Add(header, identity, 0, 2);
+            identity.Children.Add(_name); identity.Children.Add(_subtitle);
+            // Overview-only account actions: own space page, following and
+            // follower lists (counts on the buttons).
+            _accountActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 6, 0, 0) };
+            _profile = MakeButton("查看个人主页", () => ProfileRequested?.Invoke(this, EventArgs.Empty), "AccountProfileButton");
+            _followingButton = MakeButton("关注", () => RelationsRequested?.Invoke(false), "AccountFollowingButton");
+            _followersButton = MakeButton("粉丝", () => RelationsRequested?.Invoke(true), "AccountFollowersButton");
+            foreach (var button in new[] { _profile, _followingButton, _followersButton })
+            { button.FontSize = 15; button.Padding = new Thickness(16, 6, 16, 6); _accountActions.Children.Add(button); }
+            identity.Children.Add(_accountActions);
+            Add(header, identity, 0, 2);
             _signOut = MakeButton("退出登录", () => SignOutRequested?.Invoke(this, EventArgs.Empty), "AccountSignOutButton");
             _settings = MakeButton("设置", () => SettingsRequested?.Invoke(this, EventArgs.Empty), "AccountSettingsButton");
             Add(header, _settings, 0, 3); Add(header, _signOut, 0, 4); _root.Children.Add(header);
@@ -92,6 +109,7 @@ namespace BiliXbox.Controls
             _follows = SectionButton("\uE8F2", "追番追剧", "番剧、电视剧、电影与纪录片", () => OpenSection(LibraryPane.Follows), "AccountFollowsButton");
             Add(_overview, _history, 0, 0); Add(_overview, _favorites, 0, 1); Add(_overview, _follows, 0, 2);
             InitializeActivityOverview();
+            InitializeOfflinePane();
             Add(_root, _overview, 1, 0);
 
             _browse = new Grid { RowSpacing = 10 };
@@ -157,13 +175,48 @@ namespace BiliXbox.Controls
                 Render(); Focus(_back); return Task.CompletedTask;
             }
             _accountMid = user.Mid; _name.Text = user.Name; _avatar.Url = user.AvatarUrl;
-            _subtitle.Text = user.IsPremium ? "大会员 · 我的内容" : "我的内容";
+            _premium = user.IsPremium;
+            _subtitle.Text = user.IsPremium ? "大会员" : "我的内容";
+            _followingButton.Content = "关注"; _followersButton.Content = "粉丝";
             _sessionCts = token.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(token) : new CancellationTokenSource();
+            Run(LoadAccountStatsAsync);
             Render(); Focus(_history); return Task.CompletedTask;
         }
 
+        private bool _premium;
+
+        private async Task LoadAccountStatsAsync()
+        {
+            if (_api == null || _sessionCts == null) return;
+            Cancel(ref _statsCts);
+            var owner = _statsCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
+            long mid = _accountMid;
+            try
+            {
+                var stats = await _api.GetAccountStatsAsync(owner.Token);
+                if (owner.IsCancellationRequested || mid != _accountMid) return;
+                var parts = new System.Collections.Generic.List<string>();
+                if (_premium) parts.Add("大会员");
+                if (stats.Coins >= 0) parts.Add("硬币 " + FormatAmount(stats.Coins));
+                if (stats.BCoins >= 0) parts.Add("B币 " + FormatAmount(stats.BCoins));
+                if (parts.Count > 0) _subtitle.Text = string.Join(" · ", parts);
+                if (stats.Following >= 0) _followingButton.Content = "关注 " + FormatCount(stats.Following);
+                if (stats.Followers >= 0) _followersButton.Content = "粉丝 " + FormatCount(stats.Followers);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { /* The buttons still open the lists without counts. */ }
+        }
+
+        private static string FormatAmount(double value)
+            => value.ToString(Math.Abs(value - Math.Round(value)) < 0.005 ? "0" : "0.##", System.Globalization.CultureInfo.InvariantCulture);
+        private static string FormatCount(long value)
+            => value >= 100000000 ? (value / 100000000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "亿"
+                : value >= 10000 ? (value / 10000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "万"
+                : value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         public void StopRequests()
         {
+            Cancel(ref _statsCts);
             _unreadBusy = false;
             _authorsBusy = false; Cancel(ref _activityCts);
             _activityHub?.StopRequests();
@@ -205,9 +258,11 @@ namespace BiliXbox.Controls
         {
             bool overview = _state.Pane == LibraryPane.Overview;
             _overview.Visibility = overview ? Visibility.Visible : Visibility.Collapsed;
-            _browse.Visibility = overview || _state.Pane == LibraryPane.Activity ? Visibility.Collapsed : Visibility.Visible;
+            _browse.Visibility = overview || _state.Pane == LibraryPane.Activity || _state.Pane == LibraryPane.Offline ? Visibility.Collapsed : Visibility.Visible;
+            RenderOffline();
             _activityHost.Visibility = _state.Pane == LibraryPane.Activity ? Visibility.Visible : Visibility.Collapsed;
             _history.IsEnabled = _favorites.IsEnabled = _follows.IsEnabled = _watchLater.IsEnabled = _activity.IsEnabled = _signOut.IsEnabled = HasAccount;
+            _accountActions.Visibility = overview && HasAccount ? Visibility.Visible : Visibility.Collapsed;
             _sectionTitle.Text = _state.Title;
             _tabs.Visibility = _state.Pane == LibraryPane.Follows ? Visibility.Visible : Visibility.Collapsed;
             SetTab(_anime, !_state.Drama); SetTab(_drama, _state.Drama);

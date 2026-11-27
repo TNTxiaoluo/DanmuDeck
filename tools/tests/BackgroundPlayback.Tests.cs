@@ -34,7 +34,7 @@ namespace BiliXbox {
         private void RestoreBackgroundViews(){events.Add("restore-views");}
         private void RecordBackgroundState(string phase){events.Add(phase);}
         private void RecordBackgroundFailure(string phase,Exception error){errors++;}
-        private Task ResetPlaybackDisplayAsync(){events.Add("reset-display");return Task.CompletedTask;}
+        private Task ResetPlaybackDisplayAsync(bool force=false){events.Add("reset-display");return Task.CompletedTask;}
         private Task PlayWithDisplayAsync(){plays++;return Task.CompletedTask;}
         private Task WaitForBackgroundAudioAsync(int revision)=>Task.CompletedTask;
         private static void Cancel(ref CancellationTokenSource cts){var old=cts;cts=null;if(old!=null){old.Cancel();old.Dispose();}}

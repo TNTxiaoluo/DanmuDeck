@@ -4,7 +4,7 @@
 
 面向 Xbox 大屏和手柄操作的第三方 Bilibili UWP 客户端，使用 C# 7.3 / XAML 开发。
 
-项目独立于哔哩哔哩和微软。内部解决方案、程序集和命名空间保留 `BiliXbox`，应用显示名称为“弹幕舱”。本次准备提交 **1.0.5**，商店包版本为 `1.0.5.0`。配套 HDR 测试版显示为 `1.0.3.1b`。 [1.0.5 发布说明](docs/RELEASE-NOTES-1.0.5.md)
+项目独立于哔哩哔哩和微软。内部解决方案、程序集和命名空间保留 `BiliXbox`，应用显示名称为“弹幕舱”。本次准备提交 **1.0.6**，商店包版本为 `1.0.6.0`。配套测试版显示为 `1.0.3.1b`。 [1.0.6 发布说明](docs/RELEASE-NOTES-1.0.6.md)
 
 除明确准备微软商店发布外，后续开发测试版本的界面版本号使用 `b` 后缀，例如 `1.0.3b`。APPX/MSIX 包清单继续使用四段数字版本；显示后缀与包版本是不同字段。
 
@@ -102,7 +102,7 @@ THIRD-PARTY-NOTICES.txt     第三方依赖声明
 pwsh -NoProfile -File tools/Package-Source.ps1
 ```
 
-导出脚本只收集公开源码和文档，校验文件哈希并生成独立清单。当前默认 ZIP 名称为 `DanmuCabin-1.0.5-source.zip`。ZIP 内的项目目录包含 `README.md`、`BiliXbox.sln`、`src/`、`tools/`、`docs/`、`.github/` 和 `.gitignore`。ZIP 可作为 GitHub Release 的源码附件。
+导出脚本只收集公开源码和文档，校验文件哈希并生成独立清单。当前默认 ZIP 名称为 `DanmuCabin-1.0.6-source.zip`。ZIP 内的项目目录包含 `README.md`、`BiliXbox.sln`、`src/`、`tools/`、`docs/`、`.github/` 和 `.gitignore`。ZIP 可作为 GitHub Release 的源码附件。
 
 源码包排除维护者的签名材料、账号数据、真实商店关联信息、构建产物及本机工具链；使用自己的证书和产品身份构建。构建与导出脚本不自动上传 GitHub 或提交商店。
 

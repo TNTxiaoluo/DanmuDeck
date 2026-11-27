@@ -55,6 +55,8 @@ namespace BiliXbox
 
         private void SeekVideoShoulder(int step)
         {
+            // LB / RB switch the pull-down panel's pages instead of seeking.
+            if (_pausedRecommendationsVisible && step != 0) { SwitchPausedTab(step); return; }
             if (!IsShoulderSeekSurface || step == 0) return;
             ShowControls();
             // Seeking only changes Position. Never call Play or change the
@@ -94,7 +96,7 @@ namespace BiliXbox
             if (_liveVisible) return LiveHub.ScrollBy(delta);
             if (_libraryVisible) return AccountLibrary.ScrollBy(delta);
             if (_creatorVisible) return CreatorHub.ScrollBy(delta);
-            if (_pausedRecommendationsVisible) return true;
+            if (_pausedRecommendationsVisible) { ScrollPausedIntro(delta); return true; }
             if (delta > 24 && _pausedPullReady && CanOpenPausedRecommendations) { _pausedPullReady = false; _ = OpenPausedRecommendationsAsync(); return true; }
             if (!_watching)
             {

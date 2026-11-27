@@ -31,7 +31,8 @@ namespace BiliXbox.Services
                     Number(values, "fontScale", 1), Integer(values, "densityLimit", 24), Number(values, "speedScale", 1),
                     Flag(values, "smartMask", true), Flag(values, "avoidCenter", false), Flag(values, "preventOverlap", true),
                     Flag(values, "showScrolling", true), Flag(values, "showTop", true), Flag(values, "showBottom", true),
-                    Flag(values, "showColor", true), Flag(values, "mergeDuplicates", true));
+                    Flag(values, "showColor", true), Flag(values, "mergeDuplicates", true),
+                    (DanmakuStrokeStyle)Integer(values, "strokeStyle", (int)DanmakuStrokeStyle.Outline), Number(values, "topMargin", 0));
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException)) { return DanmakuSettings.Default; }
         }
@@ -48,7 +49,8 @@ namespace BiliXbox.Services
                 ["avoidCenter"] = settings.AvoidCenter, ["preventOverlap"] = settings.PreventOverlap,
                 ["showScrolling"] = settings.ShowScrolling, ["showTop"] = settings.ShowTop,
                 ["showBottom"] = settings.ShowBottom, ["showColor"] = settings.ShowColor,
-                ["mergeDuplicates"] = settings.MergeDuplicates
+                ["mergeDuplicates"] = settings.MergeDuplicates,
+                ["strokeStyle"] = (int)settings.StrokeStyle, ["topMargin"] = settings.TopMargin
             };
         }
 

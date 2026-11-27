@@ -15,8 +15,173 @@ namespace BiliXbox.Services
         internal static bool IsSupportedVideo(JToken track)
             => VideoRejectionReason(track).Length == 0;
 
+        // Set from the playback view: true while the Xbox HDMI connection has
+        // offered a Dolby Vision low-latency output mode in this session.
+        internal static bool DolbyVisionOutputAvailable { get; set; }
+
+        // Bilibili qn 126 is Dolby Vision. Only tracks whose codec string names
+        // Dolby Vision itself are offered: Profile 5 (dvh1/dvhe, verified on
+        // Xbox Series S), and the AVC/AV1 profiles (dva1/dvav/dav1) if they
+        // appear. Profile 8.x (plain hvc1/hev1 with a dvvC box) is handled by
+        // IsDolbyVisionBaseLayer: Xbox rejects it as Dolby Vision (DecodingError
+        // 0xC00D36B4, "星云" demo, 2026-11-26), so its base layer is played.
+        internal static bool IsDolbyVision(JToken track)
+        {
+            if (track == null || Number(track, "id") != 126) return false;
+            var codec = Text(track, "codecs");
+            if (IsProfile8DolbyVisionCodec(codec)) return false;
+            return codec.StartsWith("dvh1.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("dvhe.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("dva1.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("dvav.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("dav1.", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Bilibili qn 126 delivered as a plain hvc1/hev1 string is Dolby Vision
+        // Profile 8.x (dvvC box in the init segment).
+        internal static bool IsDolbyVisionProfile8(JToken track)
+        {
+            if (track == null || Number(track, "id") != 126) return false;
+            var codec = Text(track, "codecs");
+            return codec.StartsWith("hvc1.", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("hev1.", StringComparison.OrdinalIgnoreCase)
+                || IsProfile8DolbyVisionCodec(codec);
+        }
+
+        // Bilibili also labels Profile 8 tracks "dvh1.08.xx"/"dvhe.08.xx" while
+        // the file is an hvc1 sample entry with a dvvC box (BV1nu411A7pz:
+        // compat=4), so the HEVC base-layer path applies to them too.
+        internal static bool IsProfile8DolbyVisionCodec(string codec)
+            => codec != null && (codec.StartsWith("dvh1.08", StringComparison.OrdinalIgnoreCase)
+                || codec.StartsWith("dvhe.08", StringComparison.OrdinalIgnoreCase));
+
+        // Result of reading a Profile 8 track's initialization segment: the
+        // dvvC/dvcC base-layer compatibility id (1 = HDR10, 2 = SDR, 4 = HLG).
+        internal sealed class DolbyVisionCompatibilityCheck { internal int Compatibility = -1; internal bool HlgPatchable { get; set; } }
+
+        // Profile 8.1 (HDR10 base layer) plays its base layer as HDR10. Xbox
+        // cannot decode an HLG-signalled stream (8.4): DecodingError 0xC00D36B4
+        // under HDR output, and SDR output hung the media pipeline ("星云"
+        // demo, 2026-11-26). HLG is designed to be viewable as SDR, so when the
+        // SPS transfer_characteristics byte can be located exactly, it is
+        // rewritten to BT.2020 SDR in memory and the base layer plays in SDR.
+        internal static bool IsDolbyVisionBaseLayer(JToken track)
+        {
+            var check = IsDolbyVisionProfile8(track) ? track.Annotation<DolbyVisionCompatibilityCheck>() : null;
+            return check != null && (check.Compatibility == 1 || (check.Compatibility == 4 && check.HlgPatchable));
+        }
+
+        internal static bool IsDolbyVisionHlgBaseLayer(JToken track)
+            => IsDolbyVisionBaseLayer(track) && track.Annotation<DolbyVisionCompatibilityCheck>().Compatibility == 4;
+
+        // A 2-byte in-place patch that turns the SPS VUI transfer_characteristics
+        // of an HLG stream (18) into BT.2020 10-bit (14). The colour description
+        // must read primaries 9, transfer 18, matrix 9 at exactly one bit
+        // position of exactly one SPS in hvcC, and the change must not create an
+        // emulation-prevention start-code pattern. Otherwise null.
+        internal static KeyValuePair<long, byte[]>? FindHlgTransferPatch(byte[] init)
+        {
+            if (init == null) return null;
+            KeyValuePair<long, byte[]>? found = null;
+            for (int box = 4; box + 4 <= init.Length; ++box)
+            {
+                if (init[box] != (byte)'h' || init[box + 1] != (byte)'v' || init[box + 2] != (byte)'c' || init[box + 3] != (byte)'C') continue;
+                long boxSize = (long)init[box - 4] << 24 | (long)init[box - 3] << 16 | (long)init[box - 2] << 8 | init[box - 1];
+                long body = box + 4, end = Math.Min(init.Length, box - 4 + boxSize);
+                if (boxSize < 31 || body + 23 > end) continue;
+                long at = body + 23;
+                int arrays = init[body + 22];
+                for (int a = 0; a < arrays && at + 3 <= end; ++a)
+                {
+                    int type = init[at] & 0x3F;
+                    int count = init[at + 1] << 8 | init[at + 2];
+                    at += 3;
+                    for (int n = 0; n < count && at + 2 <= end; ++n)
+                    {
+                        int length = init[at] << 8 | init[at + 1];
+                        at += 2;
+                        if (at + length > end) return null;
+                        if (type == 33)
+                        {
+                            var patch = FindTransferInSps(init, at, length);
+                            if (patch == null) return null;
+                            if (found != null) return null;
+                            found = patch;
+                        }
+                        at += length;
+                    }
+                }
+            }
+            return found;
+        }
+
+        private static KeyValuePair<long, byte[]>? FindTransferInSps(byte[] data, long start, int length)
+        {
+            KeyValuePair<long, byte[]>? found = null;
+            long bits = (long)length * 8;
+            for (long p = 16; p + 24 <= bits; ++p)
+            {
+                if (ReadBits(data, start, p, 8) != 9 || ReadBits(data, start, p + 8, 8) != 18 || ReadBits(data, start, p + 16, 8) != 9) continue;
+                if (found != null) return null;
+                long first = start + (p + 8) / 8;
+                if (first + 2 > start + length) return null;
+                int shift = (int)((p + 8) % 8);
+                int window = data[first] << 8 | data[first + 1];
+                int replaced = window & ~(0xFF << (8 - shift)) | (14 << (8 - shift));
+                var bytes = new[] { (byte)(replaced >> 8), (byte)replaced };
+                // Refuse when the bytes around the change could form or break
+                // a 0x000000-0x000003 emulation-prevention pattern.
+                for (long i = Math.Max(start, first - 2); i <= Math.Min(start + length - 3, first + 1); ++i)
+                {
+                    byte b0 = i == first ? bytes[0] : i == first + 1 ? bytes[1] : data[i];
+                    byte b1 = i + 1 == first ? bytes[0] : i + 1 == first + 1 ? bytes[1] : data[i + 1];
+                    byte b2 = i + 2 == first ? bytes[0] : i + 2 == first + 1 ? bytes[1] : data[i + 2];
+                    byte o0 = data[i], o1 = data[i + 1], o2 = data[i + 2];
+                    if ((b0 == 0 && b1 == 0 && b2 <= 3) || (o0 == 0 && o1 == 0 && o2 <= 3)) return null;
+                }
+                found = new KeyValuePair<long, byte[]>(first, bytes);
+            }
+            return found;
+        }
+
+        private static int ReadBits(byte[] data, long start, long bit, int count)
+        {
+            int value = 0;
+            for (int i = 0; i < count; ++i)
+            {
+                long b = bit + i;
+                value = value << 1 | (data[start + b / 8] >> (7 - (int)(b % 8)) & 1);
+            }
+            return value;
+        }
+
+        // Base-layer compatibility id from the first Dolby Vision configuration
+        // box inside moov, or -1 when none is found.
+        internal static int DolbyVisionCompatibility(byte[] init)
+        {
+            if (init == null) return -1;
+            for (int i = 4; i + 9 <= init.Length; ++i)
+            {
+                if (init[i] != (byte)'d' || init[i + 1] != (byte)'v' || (init[i + 2] != (byte)'v' && init[i + 2] != (byte)'c' && init[i + 2] != (byte)'w')
+                    || init[i + 3] != (byte)'C') continue;
+                long size = (long)init[i - 4] << 24 | (long)init[i - 3] << 16 | (long)init[i - 2] << 8 | init[i - 1];
+                if (size < 24 || size > 64) continue;
+                return init[i + 8] >> 4;
+            }
+            return -1;
+        }
+
         internal static string VideoRejectionReason(JToken track)
         {
+            if (IsDolbyVision(track))
+                return !HasMedia(track) ? "缺少有效媒体地址或初始化/索引分段"
+                    : DolbyVisionOutputAvailable ? "" : "电视或 Xbox 当前未提供杜比视界输出模式";
+            // Profile 8.1: played as its HDR10 base layer with the Dolby Vision
+            // configuration box hidden. Other Profile 8 base layers are hidden.
+            if (IsDolbyVisionBaseLayer(track))
+                return HasMedia(track) ? "" : "缺少有效媒体地址或初始化/索引分段";
+            if (IsDolbyVisionProfile8(track))
+                return "此杜比视界视频的基础层为 HLG 或未确认，Xbox 无法解码";
             var codec = Text(track, "codecs");
             if (!(codec.StartsWith("avc1.", StringComparison.OrdinalIgnoreCase)
                 || codec.StartsWith("av01.", StringComparison.OrdinalIgnoreCase)

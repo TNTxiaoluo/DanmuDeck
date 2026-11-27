@@ -40,6 +40,7 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="QRCoder" Version="1.8.0" />
     <PackageReference Include="Win2D.uwp" Version="1.28.3" />
+    <PackageReference Include="FFmpegInteropX" Version="2.1.0.81200" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App.xaml.cs"><DependentUpon>App.xaml</DependentUpon></Compile>
@@ -48,6 +49,8 @@
     <Compile Include="MainPage.ViewingShortcuts.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Volume.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.PausedRecommendations.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.PausedIntro.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.PausedActions.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Gamepad.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.GamepadExtras.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.SectionMotion.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
@@ -64,6 +67,16 @@
     <Compile Include="MainPage.PlaybackHistory.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Audio.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.FrameRateValidation.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.SplitTransport.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.FfmpegVideo.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.OfflineCache.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.SeekAcceleration.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.SearchPage.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.AccountRelations.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.RemoteBridge.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.RemoteMedia.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.SubtitleSettings.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
+    <Compile Include="MainPage.PointerInput.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Interactions.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.Sections.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>
     <Compile Include="MainPage.InlineInput.cs"><DependentUpon>MainPage.xaml</DependentUpon></Compile>

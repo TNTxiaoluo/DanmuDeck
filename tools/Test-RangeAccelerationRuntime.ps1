@@ -13,7 +13,7 @@ $arguments = @('/nologo', '/target:exe', '/platform:x64', '/langversion:7.3', '/
 foreach ($assembly in @('System.Runtime.WindowsRuntime.dll', 'System.Runtime.InteropServices.WindowsRuntime.dll', 'System.Runtime.dll', 'System.Threading.Tasks.dll', 'System.Xml.Linq.dll')) {
     $arguments += '/reference:' + (Join-Path $framework $assembly)
 }
-foreach ($source in @('ParallelRangeDownloader.cs', 'OrderedRangeReadStream.cs', 'RangeAccelerationFilter.cs', 'DashRoutePolicy.cs', 'DownloadSpeedMeter.cs', 'DashSegmentIndex.cs')) {
+foreach ($source in @('ParallelRangeDownloader.cs', 'OrderedRangeReadStream.cs', 'RangeAccelerationFilter.cs', 'SequentialPrefetchCache.cs', 'CdnMirrors.cs', 'DashRoutePolicy.cs', 'DownloadSpeedMeter.cs', 'DashSegmentIndex.cs')) {
     $arguments += Join-Path $root ('src/BiliXbox/Services/' + $source)
 }
 $arguments += Join-Path $PSScriptRoot 'tests/RangeAccelerationRuntime.cs'

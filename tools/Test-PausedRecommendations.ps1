@@ -5,7 +5,7 @@ $code = [IO.File]::ReadAllText((Join-Path $root 'src/BiliXbox/MainPage.PausedRec
 $methods = ''
 foreach ($signature in @('private int CurrentCollectionIndex', 'private int PreparePausedCollection',
     'private async Task OpenPausedRecommendationsAsync', 'private void ClosePausedRecommendations',
-    'private async Task OpenPausedCollectionEpisodeAsync', 'private bool HandlePausedRecommendationKey', 'private void FocusPausedToolbar')) {
+    'private async Task OpenPausedCollectionEpisodeAsync', 'private bool HandlePausedRecommendationKey', 'private void ShowPausedTab', 'private void SwitchPausedTab', 'private List<int> PausedTabs', 'private void FocusPausedTabButton', 'private bool PausedHeaderFocused', 'private void ScrollPausedIntro')) {
     $match = [regex]::Match($code, '(?ms)^        ' + [regex]::Escape($signature) + '\([^\r\n]*\)\s*\{.*?^        \}')
     if (-not $match.Success) { throw "Missing method: $signature" }
     $methods += $match.Value + [Environment]::NewLine

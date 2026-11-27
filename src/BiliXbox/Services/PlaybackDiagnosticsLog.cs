@@ -16,6 +16,9 @@ namespace BiliXbox.Services
         {
             internal long Id;
             internal string Timestamp, Text;
+            // Per-range transfer traces go to their own rotating pair so their
+            // volume cannot rotate track selection and decoder errors away.
+            internal bool RangeTrace;
         }
         private const int MaxReportChars = 131072;
         private const int ChunkChars = 16384;
@@ -41,7 +44,7 @@ namespace BiliXbox.Services
                     lock (Gate)
                     {
                         if (_droppedRanges > 0) PendingRanges.AppendLine("range-trace-dropped count=" + _droppedRanges);
-                        Record(PendingRanges.ToString());
+                        Enqueue(PendingRanges.ToString(), true);
                         PendingRanges.Clear();
                         _droppedRanges = 0;
                         _rangeFlushScheduled = false;
@@ -50,7 +53,9 @@ namespace BiliXbox.Services
             }
         }
 
-        public static void Record(string report)
+        public static void Record(string report) => Enqueue(report, false);
+
+        private static void Enqueue(string report, bool rangeTrace)
         {
             if (string.IsNullOrWhiteSpace(report)) return;
             if (report.Length > MaxReportChars)
@@ -63,7 +68,7 @@ namespace BiliXbox.Services
             lock (Gate)
             {
                 if (Pending.Count >= 32) { Pending.Dequeue(); ++_droppedReports; }
-                Pending.Enqueue(new Report { Id = ++_nextReport, Timestamp = DateTimeOffset.UtcNow.ToString("u"), Text = report });
+                Pending.Enqueue(new Report { Id = ++_nextReport, Timestamp = DateTimeOffset.UtcNow.ToString("u"), Text = report, RangeTrace = rangeTrace });
                 if (!_running) { _running = true; _worker = Task.Run(WritePending); }
             }
         }
@@ -101,7 +106,7 @@ namespace BiliXbox.Services
                     string header = report.Timestamp + " report=" + report.Id + " part=" + (part + 1) + "/" + chunks.Count + "\n";
                     if (part == 0 && dropped > 0) header += "[diagnostic reports dropped: " + dropped + "; queue limit=32]\n";
                     if (part == 0 && failures > 0) header += "[diagnostic write failures: " + failures + "]\n";
-                    try { WriteChunk(header + chunks[part] + "\n\n"); }
+                    try { WriteChunk(header + chunks[part] + "\n\n", report.RangeTrace); }
                     catch (Exception)
                     {
                         lock (Gate)
@@ -116,14 +121,15 @@ namespace BiliXbox.Services
             }
         }
 
-        private static void WriteChunk(string text)
+        private static void WriteChunk(string text, bool rangeTrace)
         {
             string folder = ApplicationData.Current.LocalFolder.Path;
-            string file = Path.Combine(folder, "playback-diagnostics.log");
+            string name = rangeTrace ? "playback-ranges" : "playback-diagnostics";
+            string file = Path.Combine(folder, name + ".log");
             var bytes = Utf8.GetBytes(text);
             if (File.Exists(file) && new FileInfo(file).Length + bytes.Length > MaxFileBytes)
             {
-                string previous = Path.Combine(folder, "playback-diagnostics.previous.log");
+                string previous = Path.Combine(folder, name + ".previous.log");
                 if (File.Exists(previous)) File.Delete(previous);
                 File.Move(file, previous);
             }

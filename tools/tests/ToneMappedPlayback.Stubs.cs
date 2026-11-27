@@ -136,6 +136,10 @@ namespace BiliXbox.ToneMappedPlaybackTests
                 await Login(api);var result=await api.GetPlaybackAsync(Video,125);
                 Check(result.QualityId==125&&result.SourceQualityId==125&&result.IsHdr10&&!result.UsesSdrToneMapping
                     &&result.Hdr10DisplayVerified,"requested HDR stays actual HDR when the independent HDR output proof succeeds");
+                var mapped=result.CodecFallback;
+                Check(mapped!=null&&mapped.UsesSdrToneMapping&&mapped.IsHdr10&&mapped.VideoTrackIndex==result.VideoTrackIndex
+                    &&mapped.CodecFallback?.IsHdr10==false&&mapped.CodecFallback.QualityId==120,
+                    "an HDR10 failure tries the same source under SDR tone mapping before a native SDR 4K track");
             }
             var highRate=Data(nativeSdr:true);highRate["dash"]["video"][3]["frame_rate"]="119.994";
             Stub(highRate);

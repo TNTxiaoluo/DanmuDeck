@@ -30,8 +30,8 @@ function Test-Excluded([string]$Relative) {
         $Relative -match '(?i)(^|/)(\.env(?:\..*)?|cookies?\.(txt|json))$'
 }
 
-$rootFiles = @('.gitignore', 'AGENTS.md', 'BiliXbox.sln', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.txt')
-$publicDocuments = @('docs/BUILDING.md', 'docs/TESTING.md', 'docs/CONTROLS.md', 'docs/STORE.md', 'docs/PLAYBACK-DIAGNOSTICS.md', 'docs/RELEASE-NOTES-1.0.2.md', 'docs/RELEASE-NOTES-1.0.3.md', 'docs/RELEASE-NOTES-1.0.4.md', 'docs/RELEASE-NOTES-1.0.5.md', 'docs/ACCELERATION-FIX-2026-11-17.md', 'docs/VIEWING-UPDATE-TESTING.md')
+$rootFiles = @('.gitignore', 'AGENTS.md', 'CLAUDE.md', 'BiliXbox.sln', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.txt')
+$publicDocuments = @('docs/BUILDING.md', 'docs/TESTING.md', 'docs/CONTROLS.md', 'docs/STORE.md', 'docs/PLAYBACK-DIAGNOSTICS.md', 'docs/RELEASE-NOTES-1.0.2.md', 'docs/RELEASE-NOTES-1.0.3.md', 'docs/RELEASE-NOTES-1.0.4.md', 'docs/RELEASE-NOTES-1.0.5.md', 'docs/RELEASE-NOTES-1.0.6.md', 'docs/ACCELERATION-FIX-2026-11-17.md', 'docs/VIEWING-UPDATE-TESTING.md')
 $paths = [Collections.Generic.List[string]]::new()
 foreach ($relative in $rootFiles + $publicDocuments) {
     $path = Assert-WorkspacePath (Join-Path $workspace $relative)

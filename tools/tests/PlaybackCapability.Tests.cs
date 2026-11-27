@@ -18,7 +18,7 @@ namespace Windows.Graphics.Display.Core
     {
         public uint ResolutionWidthInRawPixels, ResolutionHeightInRawPixels;
         public double RefreshRate;
-        public bool StereoEnabled, IsSdrLuminanceSupported, IsSmpte2084Supported;
+        public bool StereoEnabled, IsSdrLuminanceSupported, IsSmpte2084Supported, IsDolbyVisionLowLatencySupported;
         public HdmiDisplayColorSpace ColorSpace;
     }
     public sealed class HdmiDisplayInformation

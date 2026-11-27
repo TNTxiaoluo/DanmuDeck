@@ -82,6 +82,15 @@ internal static class RangeAccelerationRuntime
             finally {tailServer.AllowMedia.TrySetResult(true);}
         }
         var server=new Server();var meter=new DownloadSpeedMeter();
+        var signed=new Uri("https://upos-hz-mirrorakam.akamaized.net/upgcxcode/1/2/3/3-1-30125.m4s?e=x&deadline=1&os=akam");
+        var donor=new Uri("https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/1/2/3/3-1-30125.m4s?e=x&deadline=1&os=cosbv");
+        var expanded=CdnMirrors.Expand(new[]{signed,donor});
+        Check(expanded[0]==signed&&expanded[1]==donor&&expanded.Count==2+CdnMirrors.Hosts.Length-1
+            &&expanded.Skip(2).All(uri=>uri.PathAndQuery==donor.PathAndQuery&&uri.DnsSafeHost.EndsWith(".bilivideo.com"))
+            &&expanded.Select(uri=>uri.DnsSafeHost).Distinct().Count()==expanded.Count,
+            "mirror expansion keeps server routes first and swaps only the host of a bilivideo upos donor");
+        var relay=new Uri("https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/v1/resource/a.m4s?os=mcdn");
+        Check(CdnMirrors.Expand(new[]{relay}).Count==1,"PCDN/MCDN relay URLs are never used as mirror donors");
         var failServer=new Server{FailMedia=true};
         using(var failedFilter=new RangeAccelerationFilter(failServer,Routes(),new DownloadSpeedMeter()))
         using(var failedClient=new HttpClient(failedFilter))
@@ -97,7 +106,7 @@ internal static class RangeAccelerationRuntime
             var responses=await Task.WhenAll(Send(client),Send(client,Audio,65536));
             await Verify(responses[0]);await Verify(responses[1],65536);
             Check(filter.Diagnostic.Contains("acceleratedRanges=1")&&filter.Diagnostic.Contains("nativeFallbacks=0"),"video accelerated while audio remains native");
-            Check(server.Requests>4&&server.Peak<=5&&server.HeaderErrors==0,"native headers/context survive concurrent audio/video and bounded subrequests");
+            Check(server.Requests>4&&server.Peak<=2*ParallelRangeDownloader.Concurrency+1&&server.HeaderErrors==0,"native headers/context survive concurrent audio/video and bounded subrequests");
             Check(meter.TotalDownloadedBytes>=2*1024*1024,"meter counts actual subresponse body reads");
         }
         server=new Server{InvalidSubranges=true};
@@ -106,8 +115,11 @@ internal static class RangeAccelerationRuntime
         {
             await Verify(await Send(client));
             Check(filter.Diagnostic.Contains("acceleratedRanges=0")&&filter.Diagnostic.Contains("nativeFallbacks=1"),"invalid 200 subresponses cleanly fall back to the original native request");
+            Check(filter.Diagnostic.Contains("bypass=False") && !filter.HasBodyFailure,
+                "one native retry before accelerated response headers needs no playback restart and keeps acceleration for later ranges");
+            await Verify(await Send(client));await Verify(await Send(client));
             Check(filter.Diagnostic.Contains("bypass=True") && !filter.HasBodyFailure,
-                "native retry before accelerated response headers needs no playback restart");
+                "repeated pre-header failures switch this source to native requests");
         }
         server=new Server{DifferentBackup=true};
         using(var filter=new RangeAccelerationFilter(server,Routes(),new DownloadSpeedMeter()))

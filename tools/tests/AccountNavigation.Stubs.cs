@@ -60,6 +60,8 @@ namespace BiliXbox.Controls
         public event EventHandler CloseRequested;
         public event EventHandler SignOutRequested;
         public event EventHandler SettingsRequested;
+        public event EventHandler ProfileRequested { add { } remove { } }
+        public event Action<bool> RelationsRequested { add { } remove { } }
         public event Func<AccountLibraryItem, Task> OpenItemRequested;
         public void Initialize(BilibiliClient api) { ++InitializeCount; }
         public Task ShowAsync(UserProfile user)
@@ -205,7 +207,7 @@ namespace BiliXbox
         private void UpdateAccount() { ++AccountUpdateCount; }
         private Task RefreshHomeForAccountAsync() { ++HomeRefreshCount; return Task.CompletedTask; }
         private Task PlayWithDisplayAsync() { _media.Play(); return Task.CompletedTask; }
-        private Task ResetPlaybackDisplayAsync() { return Task.CompletedTask; }
+        private Task ResetPlaybackDisplayAsync(bool force = false) { return Task.CompletedTask; }
         private PlaybackAudioMode _preferredAudioMode = PlaybackAudioMode.Standard;
         public Task HistoryFlush = Task.CompletedTask;
         private Task FlushPlaybackHistoryAsync() { return HistoryFlush; }

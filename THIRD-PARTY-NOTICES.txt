@@ -4,7 +4,8 @@ Bilibili-thread-ripper - Range download scheduling adaptation
 https://github.com/MrTangLuyao/Bilibili-thread-ripper
 Source revision: 6fd2ed3e8ca0fb6bf6e54f8f9a466cf3bd222ee8
 The application adapts the bounded parallel Range, candidate scheduling and
-response validation approach in C#. Browser interception/UI code is not bundled.
+response validation approach in C#, including its upos mirror host list and
+relay (MCDN/PCDN) exclusion rules. Browser interception/UI code is not bundled.
 
 MIT License
 
@@ -87,3 +88,25 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+FFmpegInteropX 2.1.0.81200 (NuGet FFmpegInteropX, FFmpegInteropX.UWP.Lib)
+
+https://github.com/ffmpeginteropx/FFmpegInteropX
+Copyright (c) FFmpegInteropX contributors
+Licensed under the Apache License, Version 2.0:
+http://www.apache.org/licenses/LICENSE-2.0
+Used only to decode Dolby Vision Profile 8.4 (HLG base layer) video with
+FFmpeg D3D11 hardware decoding, because the Xbox HEVC pipeline rejects
+HLG-signalled streams.
+
+FFmpeg 8.1 (NuGet FFmpegInteropX.UWP.FFmpeg 8.1.2)
+
+https://ffmpeg.org/
+Copyright (c) the FFmpeg developers
+FFmpeg is licensed under the GNU Lesser General Public License version 2.1
+or later (https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html); the
+package also contains components under the Zlib and MIT licenses.
+It is bundled unmodified as separate dynamically linked libraries
+(avcodec, avformat, avutil, avfilter, avdevice, swscale, swresample), which
+may be replaced. Corresponding source code: https://ffmpeg.org/download.html
+and https://github.com/ffmpeginteropx/FFmpegInteropX (build scripts).

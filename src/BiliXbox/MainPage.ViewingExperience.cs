@@ -88,7 +88,8 @@ namespace BiliXbox
             double width = split ? Math.Max(360, WatchView.ActualWidth / 3) : 440;
             CommentSide.Width = ReplySide.Width = width;
             Player.Margin = DanmakuMaskHost.Margin = new Thickness(0, 0, split ? width : 0, 0);
-            SubtitleLayer.Margin = new Thickness(32, 0, split ? width + 32 : 32, _playerUi.ControlsVisible ? 190 : 40);
+            double subtitleEdge = SubtitleEdgeOffset(_playerUi.ControlsVisible), subtitleRight = split ? width + 32 : 32;
+            SubtitleLayer.Margin = SubtitleStyle.Top ? new Thickness(32, subtitleEdge, subtitleRight, 0) : new Thickness(32, 0, subtitleRight, subtitleEdge);
             DrawerBackdrop.Visibility = split ? Visibility.Collapsed : _playerUi.Drawer == Controls.PlayerDrawer.None ? Visibility.Collapsed : Visibility.Visible;
         }
         private void DisposeViewingExperience()
@@ -244,34 +245,12 @@ namespace BiliXbox
 
         private async void Subtitle_Click(object sender, RoutedEventArgs args)
         {
-            if (_dialogOpen || _video == null || !_watching) return;
-            _dialogOpen = true; Cancel(ref _subtitleCts);
-            var owner = _subtitleCts = CancellationTokenSource.CreateLinkedTokenSource(_watchCts.Token);
-            long cid = _currentCid;
-            var dialog = new ContentDialog { Title = "字幕", CloseButtonText = "取消", PrimaryButtonText = "选择", RequiresPointer = RequiresPointer.Never,
-                XYFocusKeyboardNavigation = Windows.UI.Xaml.Input.XYFocusKeyboardNavigationMode.Enabled };
-            _activeGeneralDialog = dialog;
-            try
-            {
-                var tracks = await _api.GetSubtitlesAsync(_video, cid, owner.Token);
-                var choices = new List<SubtitleTrack> { new SubtitleTrack { Label = "关闭字幕" } }; choices.AddRange(tracks);
-                if (tracks.Count == 0) SetStatus(_api.IsLoggedIn ? "B站未提供此分 P 的可用字幕" : "此视频没有可用字幕，登录后可重试");
-                var list = new ListView { ItemsSource = choices, DisplayMemberPath = "Label", SelectedIndex = 0, MaxHeight = 440, MinWidth = 420, IsItemClickEnabled = true };
-                bool confirmed = false; list.ItemClick += (s,e) => { list.SelectedItem = e.ClickedItem; confirmed = true; dialog.Hide(); };
-                dialog.Content = list; dialog.Opened += (s,e) => list.Focus(FocusState.Keyboard);
-                var result = await dialog.ShowAsync();
-                if (result != ContentDialogResult.Primary && !confirmed) return;
-                var track = list.SelectedItem as SubtitleTrack;
-                var cues = string.IsNullOrEmpty(track?.Url) ? Array.Empty<SubtitleCue>() : await _api.GetSubtitleCuesAsync(track, owner.Token);
-                if (owner == _subtitleCts && cid == _currentCid && !owner.IsCancellationRequested) { _subtitleCues = cues; RenderSubtitle(); }
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { SetStatus("字幕读取失败：" + Friendly(ex)); }
-            finally { _activeGeneralDialog = null; _dialogOpen = false; RestoreNavigationFocus(); }
+            try { await ShowSubtitlePanelAsync(); }
+            catch (Exception ex) { if (!_disposed) SetStatus("字幕菜单未能打开：" + Friendly(ex)); }
         }
         private void ResetSubtitles()
         {
-            Cancel(ref _subtitleCts); _subtitleCues = Array.Empty<SubtitleCue>(); SubtitleText.Text = ""; SubtitleLayer.Visibility = Visibility.Collapsed;
+            Cancel(ref _subtitleCts); _subtitleCues = Array.Empty<SubtitleCue>(); _activeSubtitle = null; SubtitleText.Text = ""; SubtitleLayer.Visibility = Visibility.Collapsed;
         }
         private void RenderSubtitle()
         {

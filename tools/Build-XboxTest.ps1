@@ -117,6 +117,14 @@ while ($pending.Count -gt 0) {
 }
 Copy-Item -LiteralPath (Join-Path $workspace 'THIRD-PARTY-NOTICES.txt') -Destination $snapshotRoot
 $sourceManifest.Package.Identity.SetAttribute('Version', $testQuad.ToString())
+# Test builds only: the remote-control simulator bridge listens on the LAN.
+$capabilities = $sourceManifest.Package.Capabilities
+$foundationNs = $sourceManifest.DocumentElement.NamespaceURI
+if (-not ($capabilities.ChildNodes | Where-Object { $_.LocalName -eq 'Capability' -and $_.GetAttribute('Name') -eq 'privateNetworkClientServer' })) {
+    $privateNetwork = $sourceManifest.CreateElement('Capability', $foundationNs)
+    $privateNetwork.SetAttribute('Name', 'privateNetworkClientServer')
+    [void]$capabilities.InsertAfter($privateNetwork, ($capabilities.ChildNodes | Where-Object { $_.LocalName -eq 'Capability' -and $_.GetAttribute('Name') -eq 'internetClient' } | Select-Object -First 1))
+}
 $sourceManifest.Save((Join-Path $snapshotProject 'Package.appxmanifest'))
 $sourceIdentity = $sourceManifest.Package.Identity
 $versionInfoPath = Join-Path $snapshotProject 'Services\AppVersionInfo.cs'

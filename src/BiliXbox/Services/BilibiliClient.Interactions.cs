@@ -219,10 +219,19 @@ namespace BiliXbox.Services
                 throw new BilibiliApiException(-101, "登录账户或会话已改变，请刷新视频互动状态后再操作。");
         }
 
+        // Last refused account write: code, message and cookie names (no values).
+        public string LastInteractionDiagnostic { get; private set; } = "";
+
         private async Task PrepareInteractionMutationAsync(InteractionAccount account, CancellationToken ct)
         {
             EnsureInteractionAccount(account, ct);
             if (string.IsNullOrEmpty(_cookies.GetCookieValue("buvid3"))) await BootstrapWebsiteAsync(ct);
+            if (WebFingerprint != null)
+            {
+                try { await WebFingerprint(ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception) { /* Best effort: the write itself reports any refusal. */ }
+            }
             EnsureInteractionAccount(account, ct);
         }
 
@@ -230,6 +239,7 @@ namespace BiliXbox.Services
         {
             int code = ResponseCode(root);
             if (code == 0) return;
+            LastInteractionDiagnostic = "code=" + code + " message=" + Str(root, "message") + " cookies=" + _cookies.CookieNames();
             if (code == -101) CurrentUser = null;
             throw ApiError(code, Str(root, "message"));
         }

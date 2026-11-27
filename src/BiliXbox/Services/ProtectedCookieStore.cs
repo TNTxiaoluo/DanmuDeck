@@ -143,6 +143,30 @@ namespace BiliXbox.Services
             HostOnly = value.HostOnly, HttpOnly = value.HttpOnly, Secure = value.Secure, Expires = value.Expires
         };
 
+        // A cookie the website's own scripts set (buvid4, bili_ticket):
+        // stored like a server cookie for every bilibili.com request.
+        internal void SetClientCookie(string name, string value, DateTimeOffset? expires)
+        {
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(value) || ContainsControl(value) || value.IndexOf(';') >= 0) return;
+            lock (_sync)
+            {
+                _records.RemoveAll(c => c.Name == name);
+                _records.Add(new CookieRecord { Name = name, Value = value, Domain = "bilibili.com", Path = "/",
+                    Secure = false, HttpOnly = false, HostOnly = false, Expires = expires });
+            }
+        }
+
+        internal void RemoveCookie(string name)
+        {
+            lock (_sync) _records.RemoveAll(c => c.Name == name);
+        }
+
+        // Cookie names only (never values), for interaction diagnostics.
+        internal string CookieNames()
+        {
+            lock (_sync) return string.Join(",", _records.Where(IsCurrent).Select(c => c.Name).Distinct().OrderBy(n => n));
+        }
+
         internal string GetCookieValue(string name)
         {
             lock (_sync)

@@ -57,6 +57,8 @@ namespace BiliXbox
                 case "mask": settings = settings.With(smartMask: !settings.SmartMask); break;
                 case "area": settings = settings.With(areaFraction: CycleSetting(settings.AreaFraction, 1, 0.75, 0.5, 0.25)); break;
                 case "opacity": settings = settings.With(opacity: CycleSetting(settings.Opacity, 0.9, 0.75, 0.5, 0.25, 1)); break;
+                case "margin": settings = settings.With(topMargin: CycleSetting(settings.TopMargin, 0, 0.05, 0.1, 0.15, 0.2)); break;
+                case "stroke": settings = settings.With(strokeStyle: settings.NextStroke()); break;
                 case "density": settings = settings.With(densityLimit: (int)CycleSetting(settings.DensityLimit, 12, 24, 36, 48, 64)); break;
                 case "font": settings = settings.With(fontScale: CycleSetting(settings.FontScale, 0.75, 1, 1.25, 1.5)); break;
                 case "speed": settings = settings.With(speedScale: CycleSetting(settings.SpeedScale, 0.75, 1, 1.25, 1.5, 2)); break;
@@ -102,6 +104,8 @@ namespace BiliXbox
             string area = settings.AreaFraction > 0.99 ? "全屏" : settings.AreaFraction > 0.74 ? "3/4 屏" : settings.AreaFraction > 0.49 ? "1/2 屏" : "1/4 屏";
             DanmakuAreaButton.Content = "弹幕显示区域：" + area;
             DanmakuOpacityButton.Content = "不透明度：" + Math.Round(settings.Opacity * 100) + "%";
+            DanmakuTopMarginButton.Content = "顶部留白：" + DanmakuSettings.TopMarginLabel(settings.TopMargin);
+            DanmakuStrokeButton.Content = "描边类型：" + DanmakuSettings.StrokeLabel(settings.StrokeStyle);
             DanmakuDensityButton.Content = "同屏弹幕上限：" + settings.DensityLimit;
             DanmakuFontButton.Content = "字号：" + settings.FontScale.ToString("0.##") + " 倍";
             DanmakuSpeedButton.Content = "滚动速度：" + settings.SpeedScale.ToString("0.##") + " 倍";

@@ -73,7 +73,43 @@ namespace BiliXbox.HdrMetadataTests
             {
                 var bad = Video(125); bad["hdr_type"] = value; RejectHdr(bad, "unsupported format " + value);
             }
-            var dvTier = Video(126); RejectHdr(dvTier, "Dolby Vision tier");
+            var dvTier = Video(126); Check(!DashManifestBuilder.IsHdr10(dvTier), "Dolby Vision tier is not relabelled HDR10");
+            Check(DashManifestBuilder.IsDolbyVisionProfile8(dvTier) && !DashManifestBuilder.IsDolbyVisionBaseLayer(dvTier)
+                && !DashManifestBuilder.IsSupportedVideo(dvTier) && !DashManifestBuilder.IsDolbyVision(dvTier),
+                "an unverified Profile 8 Dolby Vision tier stays hidden");
+            var dvh108 = Video(126); dvh108["codecs"] = "dvh1.08.08";
+            var dvh105 = Video(126); dvh105["codecs"] = "dvh1.05.06";
+            Check(DashManifestBuilder.IsDolbyVisionProfile8(dvh108) && !DashManifestBuilder.IsDolbyVision(dvh108)
+                && DashManifestBuilder.IsDolbyVision(dvh105) && !DashManifestBuilder.IsDolbyVisionProfile8(dvh105),
+                "dvh1.08 is the Profile 8 base-layer path; dvh1.05 stays Profile 5");
+            var hlgTier = Video(126); hlgTier.AddAnnotation(new DashManifestBuilder.DolbyVisionCompatibilityCheck { Compatibility = 4 });
+            Check(!DashManifestBuilder.IsDolbyVisionBaseLayer(hlgTier) && !DashManifestBuilder.IsSupportedVideo(hlgTier),
+                "a Profile 8.4 (HLG base) tier stays hidden");
+            var hdr10Tier = Video(126); hdr10Tier.AddAnnotation(new DashManifestBuilder.DolbyVisionCompatibilityCheck { Compatibility = 1 });
+            Check(DashManifestBuilder.IsDolbyVisionBaseLayer(hdr10Tier) && DashManifestBuilder.IsSupportedVideo(hdr10Tier),
+                "a Profile 8.1 (HDR10 base) tier plays through the base-layer path");
+            var dvvC = new byte[] { 0, 0, 0, 32, (byte)'d', (byte)'v', (byte)'v', (byte)'C', 1, 0, 16, 63, 0x40, 0, 0, 0 };
+            Check(DashManifestBuilder.DolbyVisionCompatibility(dvvC) == 4 && DashManifestBuilder.DolbyVisionCompatibility(new byte[16]) == -1,
+                "the dvvC base-layer compatibility id is read from the init segment");
+            // Synthetic hvcC: one SPS whose VUI colour description (9, 18, 9)
+            // starts 3 bits into its 6th byte.
+            var sps = new byte[] { 0x42, 0x01, 0x01, 0x22, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            int colourBit = 5 * 8 + 3; int[] colour = { 9, 18, 9 };
+            for (int c = 0; c < 3; ++c) for (int b = 0; b < 8; ++b)
+                if ((colour[c] >> (7 - b) & 1) != 0) { int bit = colourBit + c * 8 + b; sps[bit / 8] |= (byte)(0x80 >> (bit % 8)); }
+            sps[sps.Length - 1] = 0x80;
+            var hvcc = new System.Collections.Generic.List<byte> { 0, 0, 0, 0, (byte)'h', (byte)'v', (byte)'c', (byte)'C' };
+            hvcc.AddRange(new byte[22]); hvcc.Add(1); hvcc.Add(0xA1); hvcc.Add(0); hvcc.Add(1); hvcc.Add(0); hvcc.Add((byte)sps.Length); hvcc.AddRange(sps);
+            hvcc[3] = (byte)hvcc.Count;
+            var init = new byte[8].Concat(hvcc).ToArray();
+            var patch = DashManifestBuilder.FindHlgTransferPatch(init);
+            Check(patch.HasValue, "the HLG transfer byte is located in the SPS colour description");
+            var patched = (byte[])init.Clone(); Buffer.BlockCopy(patch.Value.Value, 0, patched, (int)patch.Value.Key, 2);
+            int spsStart = init.Length - sps.Length, tBit = colourBit + 8, transfer = 0;
+            for (int b = 0; b < 8; ++b) transfer = transfer << 1 | (patched[spsStart + (tBit + b) / 8] >> (7 - (tBit + b) % 8) & 1);
+            Check(transfer == 14 && patched.Where((v, i) => v != init[i]).Count() <= 2, "only the transfer field changes, from HLG (18) to BT.2020 SDR (14)");
+            var noHlg = (byte[])init.Clone(); Buffer.BlockCopy(patch.Value.Value, 0, noHlg, (int)patch.Value.Key, 2);
+            Check(!DashManifestBuilder.FindHlgTransferPatch(noHlg).HasValue, "a stream without an HLG transfer byte is never patched");
             var dvCodec = Video(125); dvCodec["codecs"] = "dvhe.05.06"; RejectHdr(dvCodec, "Dolby Vision bitstream");
             foreach (var field in new[] { "hdr", "hdr_type", "hdrType" })
             {

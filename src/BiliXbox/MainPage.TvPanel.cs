@@ -100,6 +100,7 @@ namespace BiliXbox
             var current = FocusManager.GetFocusedElement() as Button;
             if (PlayerDirectionKey(key, out var direction) || key == VirtualKey.Tab)
             {
+                if (key != VirtualKey.Tab && _tvPanelGridNavigation != null) return _tvPanelGridNavigation(direction, current);
                 if (key != VirtualKey.Tab && (direction == PlayerDirection.Left || direction == PlayerDirection.Right)) return true;
                 var rows = new[] { TvPanelCloseButton }.Concat(_tvPanelRows.Where(row => row.IsEnabled && row.Visibility == Visibility.Visible)).ToList();
                 int index = rows.IndexOf(current);

@@ -321,8 +321,12 @@ namespace BiliXbox.PlaybackQualityTests
                     var hdrOption = info.AvailableQualities.First(item => item.Id == 125);
                     Check(hdrOption.IsVisible && hdrOption.IsAvailable == hdrAt4k,
                         "real4KHDR remains visible and requires compatible HDR output to select: " + hdrAt4k);
+                    var sdrFallback = info.CodecFallback;
+                    // The same HDR10 source under SDR tone mapping comes first.
+                    while (sdrFallback != null && sdrFallback.UsesSdrToneMapping && sdrFallback.VideoTrackIndex == info.VideoTrackIndex)
+                        sdrFallback = sdrFallback.CodecFallback;
                     if (hdrAt4k)
-                        Check(info.CodecFallback?.QualityId == 120 && info.CodecFallback.UsesSdrToneMapping == false,
+                        Check(sdrFallback?.QualityId == 120 && sdrFallback.UsesSdrToneMapping == false,
                             "an HDR playback failure tries a genuine SDR4K track before HD");
                 }
             }

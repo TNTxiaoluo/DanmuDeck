@@ -67,6 +67,7 @@ namespace BiliXbox.Services
             internal bool EnumerationSucceeded { get; }
             internal string Diagnostic { get; }
             internal bool HasHdr10Mode => _modes.Any(mode => mode.Hdr10 && !mode.Stereo);
+            internal bool HasDolbyVisionMode => _modes.Any(mode => mode.DolbyVision && !mode.Stereo);
             private readonly IReadOnlyList<OutputMode> _modes;
             internal DisplayModes(bool isXbox, IReadOnlyList<OutputMode> modes, bool enumerated = false,
                 string failure = "")
@@ -96,12 +97,15 @@ namespace BiliXbox.Services
         {
             internal uint Width, Height;
             internal double RefreshRate;
-            internal bool Stereo, Sdr, Hdr10;
+            internal bool Stereo, Sdr, Hdr10, DolbyVision;
         }
 
         // Call lazily on the playback view's UI thread before Task.Run. Copy
         // values rather than carrying view-scoped WinRT objects to the worker.
         // Never query or change HDMI modes from application startup.
+        private static bool DolbyVisionLowLatency(Windows.Graphics.Display.Core.HdmiDisplayMode mode)
+        { try { return mode.IsDolbyVisionLowLatencySupported; } catch (Exception) { return false; } }
+
         internal static DisplayModes CaptureDisplayModes()
         {
             bool xbox;
@@ -117,6 +121,7 @@ namespace BiliXbox.Services
                     Width = mode.ResolutionWidthInRawPixels, Height = mode.ResolutionHeightInRawPixels,
                     RefreshRate = mode.RefreshRate, Stereo = mode.StereoEnabled,
                     Sdr = mode.IsSdrLuminanceSupported,
+                    DolbyVision = DolbyVisionLowLatency(mode),
                     Hdr10 = mode.IsSmpte2084Supported
                         && mode.ColorSpace == Windows.Graphics.Display.Core.HdmiDisplayColorSpace.BT2020
                 }).ToList(), modes != null);

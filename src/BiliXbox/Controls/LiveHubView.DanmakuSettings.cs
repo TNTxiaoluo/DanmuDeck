@@ -26,7 +26,7 @@ namespace BiliXbox.Controls
         private void RenderLiveDanmakuSettings()
         {
             _drawerNotice.Text = "A 切换选项，即时生效并自动保存 · B 返回。直播与普通视频的弹幕设置分别保存。";
-            foreach (var option in new[] { "enabled", "area", "opacity", "font", "speed", "density", "overlap", "merge", "center", "scroll", "top", "bottom", "color", "reset" })
+            foreach (var option in new[] { "enabled", "area", "margin", "stroke", "opacity", "font", "speed", "density", "overlap", "merge", "center", "scroll", "top", "bottom", "color", "reset" })
             {
                 string key = option;
                 _liveSettingButtons[key] = Row(LiveSettingLabel(key), () => ChangeLiveDanmakuSetting(key), "LiveDanmakuSetting_" + key);
@@ -45,6 +45,8 @@ namespace BiliXbox.Controls
                 case "enabled": ToggleDanmaku(); return;
                 case "area": s = s.With(areaFraction: CycleLiveSetting(s.AreaFraction, 1, .75, .5, .25)); break;
                 case "opacity": s = s.With(opacity: CycleLiveSetting(s.Opacity, .9, .75, .5, .25, 1)); break;
+                case "margin": s = s.With(topMargin: CycleLiveSetting(s.TopMargin, 0, .05, .1, .15, .2)); break;
+                case "stroke": s = s.With(strokeStyle: s.NextStroke()); break;
                 case "font": s = s.With(fontScale: CycleLiveSetting(s.FontScale, .75, 1, 1.25, 1.5)); break;
                 case "speed": s = s.With(speedScale: CycleLiveSetting(s.SpeedScale, .75, 1, 1.25, 1.5, 2)); break;
                 case "density": s = s.With(densityLimit: (int)CycleLiveSetting(s.DensityLimit, 12, 24, 36, 48, 64)); break;
@@ -82,6 +84,8 @@ namespace BiliXbox.Controls
                 case "enabled": return "直播弹幕：" + state(_danmaku);
                 case "area": return "显示区域：" + (s.AreaFraction > .99 ? "全屏" : s.AreaFraction > .74 ? "3/4 屏" : s.AreaFraction > .49 ? "1/2 屏" : "1/4 屏");
                 case "opacity": return "不透明度：" + Math.Round(s.Opacity * 100) + "%";
+                case "margin": return "顶部留白：" + DanmakuSettings.TopMarginLabel(s.TopMargin);
+                case "stroke": return "描边类型：" + DanmakuSettings.StrokeLabel(s.StrokeStyle);
                 case "font": return "字号：" + s.FontScale.ToString("0.##", CultureInfo.InvariantCulture) + " 倍";
                 case "speed": return "滚动速度：" + s.SpeedScale.ToString("0.##", CultureInfo.InvariantCulture) + " 倍";
                 case "density": return "同屏弹幕上限：" + s.DensityLimit;

@@ -177,6 +177,7 @@ namespace BiliXbox.Services
                 result.Video = new VideoItem
                 {
                     Aid = Number(archive, "aid"), Bvid = Str(archive, "bvid"), Title = Str(archive, "title"),
+                    Description = PlainText(Str(archive, "desc")),
                     CoverUrl = ImageUrl(Str(archive, "cover")), DurationText = Str(archive, "duration_text"),
                     Owner = result.Author, OwnerMid = result.AuthorMid, OwnerAvatarUrl = result.AvatarUrl,
                     PlayText = Str(archive["stat"] as JObject, "play")

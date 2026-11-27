@@ -14,7 +14,7 @@ namespace BiliXbox.Services
         internal PlaybackDisplayController() { ++Constructed; }
         internal Task<bool> PrepareAsync(PlaybackInfo value, CancellationToken token)
         { ++PrepareCount; return Prepare == null ? Task.FromResult(true) : Prepare(value, token); }
-        internal Task ResetAsync() { ++ResetCount; return Reset == null ? Task.CompletedTask : Reset(); }
+        internal Task ResetAsync(bool force = false) { ++ResetCount; return Reset == null ? Task.CompletedTask : Reset(); }
         internal static void Clear() { Constructed = PrepareCount = ResetCount = 0; Prepare = null; Reset = null; Failure = null; }
     }
 }

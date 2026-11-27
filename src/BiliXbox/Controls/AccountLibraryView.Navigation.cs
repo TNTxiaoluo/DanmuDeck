@@ -37,6 +37,7 @@ namespace BiliXbox.Controls
             }
             Render();
             if (_state.Pane == LibraryPane.Activity) { RestoreActivityFocus(); return; }
+            if (_state.Pane == LibraryPane.Offline) { FocusOffline(); return; }
             if (_state.Pane == LibraryPane.Overview)
             {
                 var sections = new Control[] { _history, _favorites, _follows, _watchLater, _activity };
@@ -49,6 +50,7 @@ namespace BiliXbox.Controls
         internal void Navigate(PlayerDirection direction)
         {
             if (_state.Pane == LibraryPane.Activity) { NavigateActivity(direction); return; }
+            if (_state.Pane == LibraryPane.Offline && NavigateOffline(direction)) return;
             ViewportFocusScroll.Reconcile(ActiveList); ViewportFocusScroll.Cancel(this);
             var current = FocusManager.GetFocusedElement() as Control;
             var list = ActiveList; int index = ListIndex(list, current);
@@ -76,7 +78,7 @@ namespace BiliXbox.Controls
                     Focus(sections[Math.Max(0, Math.Min(4, sectionIndex + (direction == PlayerDirection.Left ? -1 : 1)))]);
                 return;
             }
-            var header = new Control[] { _back, _settings, _signOut };
+            var header = new Control[] { _back, _profile, _followingButton, _followersButton, _settings, _signOut }.Where(IsAvailable).ToArray();
             int headerIndex = Array.IndexOf(header, current);
             if (headerIndex >= 0)
             {
@@ -121,6 +123,7 @@ namespace BiliXbox.Controls
         {
             if (repeat || _openingItem) return;
             if (_state.Pane == LibraryPane.Activity) { ConfirmActivity(); return; }
+            if (_state.Pane == LibraryPane.Offline && _offlineView.Confirm()) return;
             var current = FocusManager.GetFocusedElement() as Control;
             int index = ListIndex(ActiveList, current);
             if (_state.Pane != LibraryPane.Overview && index >= 0 && index < ActiveList.Items.Count)
@@ -130,13 +133,16 @@ namespace BiliXbox.Controls
                 return;
             }
             if (ReferenceEquals(current, _back)) { if (!Back()) CloseRequested?.Invoke(this, EventArgs.Empty); }
+            else if (ReferenceEquals(current, _profile)) ProfileRequested?.Invoke(this, EventArgs.Empty);
+            else if (ReferenceEquals(current, _followingButton)) RelationsRequested?.Invoke(false);
+            else if (ReferenceEquals(current, _followersButton)) RelationsRequested?.Invoke(true);
             else if (ReferenceEquals(current, _settings)) SettingsRequested?.Invoke(this, EventArgs.Empty);
             else if (ReferenceEquals(current, _signOut) && _signOut.IsEnabled) SignOutRequested?.Invoke(this, EventArgs.Empty);
             else if (ReferenceEquals(current, _history) && _history.IsEnabled) OpenSection(LibraryPane.History);
             else if (ReferenceEquals(current, _favorites) && _favorites.IsEnabled) OpenSection(LibraryPane.Folders);
             else if (ReferenceEquals(current, _follows) && _follows.IsEnabled) OpenSection(LibraryPane.Follows);
             else if (ReferenceEquals(current, _watchLater) && _watchLater.IsEnabled) OpenSection(LibraryPane.WatchLater);
-            else if (ReferenceEquals(current, _activity) && _activity.IsEnabled) OpenSection(LibraryPane.Activity);
+            else if (ReferenceEquals(current, _activity) && _activity.IsEnabled) OpenOffline();
             else if (ReferenceEquals(current, _anime) && _anime.IsEnabled) SwitchFollows(false);
             else if (ReferenceEquals(current, _drama) && _drama.IsEnabled) SwitchFollows(true);
             else if (ReferenceEquals(current, _refresh) && _refresh.IsEnabled) Run(RefreshAsync);

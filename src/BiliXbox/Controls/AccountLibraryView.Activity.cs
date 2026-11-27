@@ -46,7 +46,7 @@ namespace BiliXbox.Controls
         private void InitializeActivityOverview()
         {
             _watchLater = SectionButton("\uE823", "稍后再看", "继续待看的视频", () => OpenSection(LibraryPane.WatchLater), "AccountWatchLater");
-            _activity = SectionButton("\uE8A1", "UP 动态", "全部动态与关注的 UP 主", () => OpenSection(LibraryPane.Activity), "AccountActivity");
+            _activity = SectionButton("\uE896", "离线缓存", "已缓存的视频与下载进度", OpenOffline, "AccountOffline");
             Add(_overview, _watchLater, 0, 3); Add(_overview, _activity, 0, 4);
             _activityHost = new Grid { ColumnSpacing = 14, Visibility = Visibility.Collapsed };
             _activityHost.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });

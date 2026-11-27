@@ -87,6 +87,7 @@
       <MediaPlayerElement x:Name="Player" AreTransportControlsEnabled="False" Stretch="Uniform" IsTabStop="False" />
       <Grid x:Name="DanmakuMaskHost" IsHitTestVisible="False">
         <controls:DanmakuOverlay x:Name="Danmaku" IsHitTestVisible="False" />
+        <controls:DanmakuBurstCounter x:Name="DanmakuBurst" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="120,34,0,0" />
       </Grid>
       <Button x:Name="PlayerSurface" Click="PlayerSurface_Click" IsTabStop="False" Background="Transparent" BorderThickness="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" UseSystemFocusVisuals="False" AutomationProperties.Name="暂停或播放视频">
         <Button.Template><ControlTemplate TargetType="Button"><Grid Background="Transparent" /></ControlTemplate></Button.Template>
@@ -128,6 +129,15 @@
             </Button>
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="10">
+            <Button x:Name="WatchCacheButton" Click="WatchCache_Click" AutomationProperties.Name="缓存视频，离线观看">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Grid Width="22" Height="22" VerticalAlignment="Center">
+                  <FontIcon Glyph="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="20" />
+                  <FontIcon Glyph="&#xE74B;" FontFamily="Segoe MDL2 Assets" FontSize="9" Margin="0,4,0,0" />
+                </Grid>
+                <TextBlock Text="缓存" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
             <Button x:Name="WatchSearchButton" Content="搜索" Click="SearchFocus_Click" />
             <Button x:Name="WatchAccountButton" Content="扫码登录" Click="Account_Click" />
           </StackPanel>
@@ -159,7 +169,7 @@
               <ToggleButton x:Name="DanmakuToggle" Content="弹幕 开" IsChecked="True" Click="DanmakuToggle_Click" CornerRadius="26" Padding="14,10" />
               <Button x:Name="DanmakuEntryButton" Content="发弹幕" Click="DanmakuEntry_Click" CornerRadius="26" Padding="14,10" />
               <Button x:Name="CommentsButton" Content="评论" Click="Comments_Click" CornerRadius="26" Padding="14,10" />
-              <Button x:Name="InteractionButton" Content="互动" Click="Interactions_Click" CornerRadius="26" Padding="14,10" AutomationProperties.Name="视频互动：点赞、投币、收藏和三连" />
+              <Button x:Name="InteractionButton" Visibility="Collapsed" Content="互动" Click="Interactions_Click" CornerRadius="26" Padding="14,10" AutomationProperties.Name="视频互动：点赞、投币、收藏和三连" />
               <Button x:Name="DanmakuSettingsButton" Content="弹幕设置" Click="DanmakuSettings_Click" CornerRadius="26" Padding="14,10" />
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
@@ -173,34 +183,80 @@
         </StackPanel>
       </Grid>
       </ContentControl>
-      <Border x:Name="SubtitleLayer" IsHitTestVisible="False" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="32,0,32,100" Background="#BB000000" CornerRadius="8" Padding="16,8"><TextBlock x:Name="SubtitleText" TextWrapping="Wrap" TextAlignment="Center" FontSize="25" Foreground="White" MaxWidth="960" /></Border>
+      <Border x:Name="SubtitleLayer" IsHitTestVisible="False" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="32,0,32,100" Background="#BB000000" CornerRadius="8" Padding="16,8"><Grid x:Name="SubtitleTextHost"><TextBlock x:Name="SubtitleText" TextWrapping="Wrap" TextAlignment="Center" FontSize="25" Foreground="White" MaxWidth="960" /></Grid></Border>
       <Grid x:Name="DrawerBackdrop" Background="#80000000" Visibility="Collapsed" Tapped="DrawerBackdrop_Tapped" />
-      <Grid x:Name="PausedRecommendationsPanel" Height="324" VerticalAlignment="Bottom" Background="#F50D0D10" Padding="26,12" Visibility="Collapsed">
+      <Grid x:Name="PausedRecommendationsPanel" Height="600" VerticalAlignment="Bottom" Background="#F50D0D10" Padding="26,14" Visibility="Collapsed">
         <Grid.Resources>
           <ItemsPanelTemplate x:Key="PlaybackCardRow">
             <ItemsWrapGrid Orientation="Vertical" MaximumRowsOrColumns="1" ItemWidth="224" ItemHeight="218" />
           </ItemsPanelTemplate>
         </Grid.Resources>
-        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-        <Grid><TextBlock x:Name="PausedPanelTitle" Text="相关推荐" Foreground="White" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <!-- Tabs: 简介 / 合集 / 相关推荐 (LB / RB switch) -->
+        <Grid>
+          <StackPanel Orientation="Horizontal" Spacing="12">
+            <TextBlock Text="LB" FontSize="15" Foreground="#77FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0" />
+            <Button x:Name="PausedTabIntro" Content="简介" Click="PausedTab_Click" Padding="22,8" FontSize="19" />
+            <Button x:Name="PausedTabCollection" Content="合集" Click="PausedTab_Click" Padding="22,8" FontSize="19" Visibility="Collapsed" />
+            <Button x:Name="PausedTabRelated" Content="相关推荐" Click="PausedTab_Click" Padding="22,8" FontSize="19" />
+            <TextBlock Text="RB" FontSize="15" Foreground="#77FFFFFF" VerticalAlignment="Center" Margin="4,0,0,0" />
+          </StackPanel>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
             <Button x:Name="PausedRecommendationRefresh" Content="刷新" Click="RefreshPausedRecommendations_Click" />
             <Button x:Name="PausedRecommendationClose" Content="返回视频" Click="ClosePausedRecommendations_Click" />
           </StackPanel>
         </Grid>
-        <TextBlock x:Name="PausedRecommendationNotice" Grid.Row="1" Text="左右选择 · A 播放 · B 返回" FontSize="14" Foreground="#99FFFFFF" Margin="0,4,0,0" TextWrapping="Wrap" />
-        <GridView x:Name="PausedCollectionGrid" Grid.Row="2" Height="218" Padding="8,0" Visibility="Collapsed"
-          SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedCollection_ItemClick" AutomationProperties.Name="合集选集"
-          ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
-          ItemContainerStyle="{StaticResource TvCardItemStyle}"
-          ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
-          ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
-        <TextBlock x:Name="PausedRelatedTitle" Grid.Row="3" Text="相关推荐" Visibility="Collapsed" Foreground="White" FontSize="19" FontWeight="SemiBold" />
-        <GridView x:Name="PausedRecommendationGrid" Grid.Row="4" SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedRecommendation_ItemClick" Padding="8,0"
-          ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
-          ItemContainerStyle="{StaticResource TvCardItemStyle}"
-          ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
-          ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
+        <TextBlock x:Name="PausedRecommendationNotice" Grid.Row="1" Text="LB / RB 切换 · 左右选择 · A 确认 · B 返回" FontSize="14" Foreground="#99FFFFFF" Margin="0,8,0,6" TextWrapping="Wrap" />
+        <Grid Grid.Row="2">
+          <!-- 简介 page -->
+          <ScrollViewer x:Name="PausedIntroScroll" VerticalScrollMode="Enabled" VerticalScrollBarVisibility="Hidden" HorizontalScrollMode="Disabled" IsTabStop="False">
+            <StackPanel x:Name="PausedIntro" Spacing="10" Margin="8,4,8,16">
+              <TextBlock x:Name="PausedIntroTitle" FontSize="22" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap" />
+              <StackPanel Orientation="Horizontal" Spacing="22">
+                <StackPanel Orientation="Horizontal" Spacing="7" AutomationProperties.Name="播放量"><FontIcon Glyph="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="17" Foreground="#99FFFFFF" /><TextBlock x:Name="PausedViewCount" FontSize="17" Foreground="#CCFFFFFF" VerticalAlignment="Center" /></StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="7" AutomationProperties.Name="弹幕数"><FontIcon Glyph="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="17" Foreground="#99FFFFFF" /><TextBlock x:Name="PausedDanmakuCount" FontSize="17" Foreground="#CCFFFFFF" VerticalAlignment="Center" /></StackPanel>
+                <TextBlock x:Name="PausedPublishTime" FontSize="17" Foreground="#CCFFFFFF" VerticalAlignment="Center" />
+                <StackPanel x:Name="PausedOnlinePanel" Orientation="Horizontal" Spacing="7" Visibility="Collapsed" AutomationProperties.Name="正在观看"><FontIcon Glyph="&#xE716;" FontFamily="Segoe MDL2 Assets" FontSize="17" Foreground="#99FFFFFF" /><TextBlock x:Name="PausedOnlineCount" FontSize="17" Foreground="#CCFFFFFF" VerticalAlignment="Center" /></StackPanel>
+              </StackPanel>
+              <StackPanel x:Name="PausedStatementPanel" Orientation="Horizontal" Spacing="7" Visibility="Collapsed"><FontIcon Glyph="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="#99FFFFFF" /><TextBlock x:Name="PausedStatement" FontSize="16" Foreground="#CCFFFFFF" VerticalAlignment="Center" TextWrapping="Wrap" /></StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="14">
+                <TextBlock x:Name="PausedBvid" FontSize="16" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                <StackPanel x:Name="PausedNoReprint" Orientation="Horizontal" Spacing="6" Visibility="Collapsed"><FontIcon Glyph="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#FF6B6B" /><TextBlock Text="未经作者授权禁止转载" FontSize="16" Foreground="#99FFFFFF" VerticalAlignment="Center" /></StackPanel>
+              </StackPanel>
+              <ScrollViewer x:Name="PausedTagsScroll" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Hidden" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled" IsTabStop="False" Visibility="Collapsed" Padding="0,4">
+                <StackPanel x:Name="PausedTagsPanel" Orientation="Horizontal" Spacing="12" />
+              </ScrollViewer>
+              <TextBlock x:Name="PausedDescription" FontSize="17" Foreground="#E6FFFFFF" TextWrapping="Wrap" LineHeight="28" MaxWidth="1680" HorizontalAlignment="Left" IsTextSelectionEnabled="False" />
+              <StackPanel x:Name="PausedActions" Orientation="Horizontal" Spacing="28" Margin="0,14,0,4">
+                <Button x:Name="PausedLikeButton" Click="PausedLike_Click" Padding="26,12" MinWidth="128" CornerRadius="18" AutomationProperties.Name="点赞（长按 A 一键三连）">
+                  <StackPanel Spacing="6"><Grid Width="60" Height="60" HorizontalAlignment="Center"><Ellipse x:Name="PausedLikeRing" Width="58" Height="58" StrokeThickness="3" Stroke="#FFFB7299" Visibility="Collapsed" /><FontIcon x:Name="PausedLikeIcon" Glyph="&#xE8E1;" FontFamily="Segoe MDL2 Assets" FontSize="32" HorizontalAlignment="Center" /></Grid><TextBlock x:Name="PausedLikeCount" FontSize="16" HorizontalAlignment="Center" /></StackPanel>
+                </Button>
+                <Button x:Name="PausedCoinButton" Click="PausedCoin_Click" Padding="26,12" MinWidth="128" CornerRadius="18" AutomationProperties.Name="投币">
+                  <StackPanel Spacing="6"><Grid Width="60" Height="60" HorizontalAlignment="Center"><Ellipse x:Name="PausedCoinRing" Width="58" Height="58" StrokeThickness="3" Stroke="#FFFB7299" Visibility="Collapsed" /><Border x:Name="PausedCoinIcon" Width="34" Height="34" CornerRadius="17" BorderThickness="2.5" BorderBrush="#E6FFFFFF" HorizontalAlignment="Center"><TextBlock x:Name="PausedCoinGlyph" Text="币" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border></Grid><TextBlock x:Name="PausedCoinCount" FontSize="16" HorizontalAlignment="Center" /></StackPanel>
+                </Button>
+                <Button x:Name="PausedFavoriteButton" Click="PausedFavorite_Click" Padding="26,12" MinWidth="128" CornerRadius="18" AutomationProperties.Name="收藏">
+                  <StackPanel Spacing="6"><Grid Width="60" Height="60" HorizontalAlignment="Center"><Ellipse x:Name="PausedFavoriteRing" Width="58" Height="58" StrokeThickness="3" Stroke="#FFFB7299" Visibility="Collapsed" /><FontIcon x:Name="PausedFavoriteIcon" Glyph="&#xE734;" FontFamily="Segoe MDL2 Assets" FontSize="32" HorizontalAlignment="Center" /></Grid><TextBlock x:Name="PausedFavoriteCount" FontSize="16" HorizontalAlignment="Center" /></StackPanel>
+                </Button>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+          <!-- 合集 page -->
+          <StackPanel x:Name="PausedCollectionPage" Visibility="Collapsed" Spacing="8">
+            <TextBlock x:Name="PausedCollectionTitle" Text="合集" Foreground="White" FontSize="19" FontWeight="SemiBold" />
+            <GridView x:Name="PausedCollectionGrid" Height="218" Padding="8,0"
+              SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedCollection_ItemClick" AutomationProperties.Name="合集选集"
+              ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
+              ItemContainerStyle="{StaticResource TvCardItemStyle}"
+              ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+              ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
+          </StackPanel>
+          <!-- 相关推荐 page -->
+          <GridView x:Name="PausedRecommendationGrid" Visibility="Collapsed" Height="218" VerticalAlignment="Top" SelectionMode="None" IsItemClickEnabled="True" ItemClick="PausedRecommendation_ItemClick" Padding="8,0"
+            ItemsPanel="{StaticResource PlaybackCardRow}" ItemTemplate="{StaticResource TvCompactVideoCardTemplate}"
+            ItemContainerStyle="{StaticResource TvCardItemStyle}"
+            ScrollViewer.HorizontalScrollMode="Enabled" ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+            ScrollViewer.VerticalScrollMode="Disabled" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
+        </Grid>
       </Grid>
       <controls:VideoInteractionView x:Name="InteractionSide" Width="480" HorizontalAlignment="Right" Visibility="Collapsed" />
       <!-- Settings drawer: dark glass panel -->
@@ -238,6 +294,8 @@
             <TextBlock x:Name="DanmakuMaskHint" Text="智能防挡：正在检查此视频的人物遮罩" Foreground="#99F2F2F7" FontSize="14" TextWrapping="Wrap" />
             <Button x:Name="DanmakuMaskButton" Click="DanmakuOption_Click" Tag="mask" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
             <Button x:Name="DanmakuAreaButton" Click="DanmakuOption_Click" Tag="area" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
+            <Button x:Name="DanmakuTopMarginButton" Click="DanmakuOption_Click" Tag="margin" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
+            <Button x:Name="DanmakuStrokeButton" Click="DanmakuOption_Click" Tag="stroke" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
             <Button x:Name="DanmakuOpacityButton" Click="DanmakuOption_Click" Tag="opacity" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
             <Button x:Name="DanmakuDensityButton" Click="DanmakuOption_Click" Tag="density" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
             <Button x:Name="DanmakuFontButton" Click="DanmakuOption_Click" Tag="font" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Style="{StaticResource TvRowButtonStyle}" />
@@ -340,7 +398,7 @@
     <controls:CreatorHubView x:Name="CreatorHub" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed" />
     <controls:AccountLibraryView x:Name="AccountLibrary" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed" />
     <Grid x:Name="TvPanelLayer" Grid.Row="0" Grid.RowSpan="3" Background="#88000000" Visibility="Collapsed">
-      <Grid Width="440" HorizontalAlignment="Right" Background="#F00D0D10" Padding="28,32">
+      <Grid x:Name="TvPanelBox" Width="440" HorizontalAlignment="Right" Background="#F00D0D10" Padding="28,32">
         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
         <Grid Margin="0,0,0,22">
           <TextBlock x:Name="TvPanelTitle" FontSize="24" FontWeight="SemiBold" Foreground="#F2F2F7" VerticalAlignment="Center" />

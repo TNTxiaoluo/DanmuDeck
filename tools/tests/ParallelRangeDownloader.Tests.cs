@@ -24,7 +24,7 @@ namespace BiliXbox.ParallelRangeTests
             });
             var result=await downloader.DownloadAsync(new[]{"primary","backup"},12345,3*1024*1024,CancellationToken.None);
             Check(result.Bytes.SequenceEqual(Bytes(12345,3*1024*1024))&&result.Total==12*1024*1024,"out-of-order parallel responses reconstruct the exact requested bytes and preserve full file length");
-            Check(peak<=4&&used.Count==2&&downloader.ReservedBytes==0,"shared connection budget and signed backup candidates remain bounded and memory reservations release");
+            Check(peak<=Services.ParallelRangeDownloader.Concurrency&&used.Count==2&&downloader.ReservedBytes==0,"shared connection budget and signed backup candidates remain bounded and memory reservations release");
             Check(await downloader.DownloadAsync(new[]{"primary"},0,16,CancellationToken.None)==null,"small initialization requests bypass acceleration");
 
             const int segment = 2 * 1024 * 1024;
@@ -78,6 +78,24 @@ namespace BiliXbox.ParallelRangeTests
             Check(alternativeRequests - priorAlternatives > throttledRequests - priorThrottled,
                 "when the initially fast node drops speed, future chunks prefer the healthy alternative");
 
+            bool stall=false;int stalled=0;
+            var hedging=new Services.ParallelRangeDownloader(async(url,offset,count,ct)=>
+            {
+                if(count!=Services.ParallelRangeDownloader.AnchorBytes)
+                {
+                    if(url=="usually-fast"&&stall&&Interlocked.Increment(ref stalled)==1) await Task.Delay(20000,ct);
+                    else await Task.Delay(url=="usually-fast"?5:40,ct);
+                }
+                return Chunk(offset,count);
+            });
+            await hedging.DownloadAsync(new[]{"usually-fast","backup-route"},0,segment,CancellationToken.None);
+            stall=true;var hedgeClock=System.Diagnostics.Stopwatch.StartNew();
+            var hedgedRange=await hedging.DownloadAsync(new[]{"usually-fast","backup-route"},segment,segment,CancellationToken.None);
+            Check(hedgedRange.Bytes.SequenceEqual(Bytes(segment,segment))&&hedgeClock.ElapsedMilliseconds<8000
+                &&hedging.PerformanceDiagnostic.Contains("hedgeWins=1"),
+                "a chunk stalled far beyond its route's speed is hedged on another verified route instead of waiting for the timeout");
+            Check(hedging.PerformanceDiagnostic.Contains("verifiedRoutes=2"),"verified routes are remembered across ranges of the same file");
+
             int badMedia=0;
             downloader=new Services.ParallelRangeDownloader(async(url,offset,count,ct)=>
             {
@@ -103,8 +121,9 @@ namespace BiliXbox.ParallelRangeTests
             using(var cancel=new CancellationTokenSource())
             {
                 var waiting=downloader.DownloadAsync(new[]{"held"},0,16*1024*1024,cancel.Token);
-                Check(await downloader.DownloadAsync(new[]{"second"},0,16*1024*1024,cancel.Token)==null,"global byte budget makes another oversized concurrent request use native fallback");
-                cancel.Cancel();bool canceled=false;try{await waiting;}catch(OperationCanceledException){canceled=true;}
+                var waitingSecond=downloader.DownloadAsync(new[]{"held-second"},0,16*1024*1024,cancel.Token);
+                Check(await downloader.DownloadAsync(new[]{"third"},0,16*1024*1024,cancel.Token)==null,"global byte budget makes another oversized concurrent request use native fallback");
+                cancel.Cancel();bool canceled=false;try{await waiting;}catch(OperationCanceledException){canceled=true;}try{await waitingSecond;}catch(OperationCanceledException){}
                 Check(canceled&&downloader.ReservedBytes==0,"source cancellation joins active probes and releases the byte budget");
             }
             var failures=new Services.AdaptiveDownloadFailureState();

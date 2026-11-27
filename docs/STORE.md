@@ -2,7 +2,7 @@
 
 开发测试签名和正式商店身份采用独立流程。开源代码不包含发布者的私钥、真实商店关联文件或既有商店上传包。
 
-本次准备送审版本为 `1.0.5`，包版本为 `1.0.5.0`。配套 HDR 测试版显示 `1.0.3.1b`。 [1.0.5 发布说明](RELEASE-NOTES-1.0.5.md)
+本次准备送审版本为 `1.0.6`，包版本为 `1.0.6.0`。配套测试版显示 `1.0.3.1b`。 [1.0.6 发布说明](RELEASE-NOTES-1.0.6.md)
 
 ## 配置自己的产品身份
 
@@ -25,7 +25,7 @@ Copy-Item -LiteralPath tools/Package.StoreAssociation.example.xml -Destination t
 按 [BUILDING.md](BUILDING.md) 安装工具后执行：
 
 ```powershell
-pwsh -NoProfile -File tools/Build-StoreUpload.ps1 -StoreAssociationPath tools/Package.StoreAssociation.xml -Version 1.0.5.0 -Msix
+pwsh -NoProfile -File tools/Build-StoreUpload.ps1 -StoreAssociationPath tools/Package.StoreAssociation.xml -Version 1.0.6.0 -Msix
 ```
 
 工具使用微软 MSBuild 的 `StoreUpload` 模式，在隔离副本中覆盖商店身份、显示名称和版本，输出到 `artifacts/StoreUpload/`。指定 `-Msix` 时生成包含 `.msix` 和调试符号的 `.msixupload`。构建同时校验包身份、版本、品牌资源、符号及数据块。

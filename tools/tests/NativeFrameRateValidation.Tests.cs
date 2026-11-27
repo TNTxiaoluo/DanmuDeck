@@ -53,7 +53,7 @@ namespace BiliXbox
         private void UpdatePlaybackUi() { }
         private void SetStatus(string text) { }
         private void ShowControls() { }
-        private Task ResetPlaybackDisplayAsync() { ResetAction?.Invoke(); return Task.CompletedTask; }
+        private Task ResetPlaybackDisplayAsync(bool force = false) { ResetAction?.Invoke(); return Task.CompletedTask; }
         private Task LoadPartAsync(long cid, int? quality = null, bool preservePosition = false, PlaybackInfo preparedPlayback = null)
         {
             if (cid != _currentCid || !preservePosition) throw new Exception("fallback must preserve playback position and video");

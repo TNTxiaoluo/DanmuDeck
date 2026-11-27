@@ -57,7 +57,7 @@ namespace BiliXbox.Controls
             ++_openGeneration; _openingItem = false;
             RememberSelection(); CancelLoad(); _trail.Push(_state); _state = state; _lastFocus = null;
             if (state.Pane == LibraryPane.Activity) BeginActivityVisit();
-            Render(); if (state.Pane == LibraryPane.Activity) RestoreActivityFocus(); else Focus(_refresh);
+            Render(); if (state.Pane == LibraryPane.Activity) RestoreActivityFocus(); else if (state.Pane == LibraryPane.Offline) FocusOffline(); else Focus(_refresh);
         }
 
         public bool Back()
@@ -71,7 +71,7 @@ namespace BiliXbox.Controls
 
         private async Task RefreshAsync()
         {
-            if (!EnsureSession() || _state.Pane == LibraryPane.Overview) return;
+            if (!EnsureSession() || _state.Pane == LibraryPane.Overview || _state.Pane == LibraryPane.Offline) return;
             var state = _state;
             if (state.Pane == LibraryPane.Activity)
             {

@@ -30,6 +30,26 @@ namespace BiliXbox.Controls
         private DateTimeOffset _lastActivity = DateTimeOffset.UtcNow;
         private int _overlayAdmissions;
         private readonly LiveMessageQueue<QueuedLiveMessage> _queuedMessages = new LiveMessageQueue<QueuedLiveMessage>();
+        private readonly LivePlaybackWatchdog _watchdog = new LivePlaybackWatchdog();
+        private bool _liveReloadInFlight;
+
+        private async void ReloadLiveSource(string reason)
+        {
+            if (_liveReloadInFlight || !IsPlayingRoom || _room == null) return;
+            int generation = _roomGeneration;
+            int quality = _playback?.QualityId > 0 ? _playback.QualityId : 10000;
+            double position = 0; string state = "none";
+            try { if (_player != null) { position = _player.PlaybackSession.Position.TotalSeconds; state = _player.PlaybackSession.PlaybackState.ToString(); } }
+            catch (Exception) { }
+            PlaybackDiagnosticsLog.Record("live-auto-reload reason=" + reason + " room=" + _room.Id + " generation=" + generation
+                + " quality=" + quality + " attempts=" + _watchdog.Attempts + " state=" + state
+                + " position=" + position.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                + " liveClockMin=" + (_liveClock.Elapsed.TotalMinutes).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
+            _liveReloadInFlight = true;
+            try { await LoadPlaybackAsync(quality, generation); }
+            catch (Exception ex) { RecordLive("auto-reload-failed", ex); }
+            finally { _liveReloadInFlight = false; }
+        }
 
         private bool RoomCurrent(int generation) => _room != null && generation == _roomGeneration &&
             _roomCts != null && !_roomCts.IsCancellationRequested;
@@ -52,7 +72,7 @@ namespace BiliXbox.Controls
                 _chatInput.Text = ""; _uncertainChat = ""; ResetChatScroll(); _messages.Items.Clear(); _watchNotice.Text = "左摇杆 / 方向键选择 · A 确认 · R 滚动面板 · B 隐藏控件 / 返回";
                 _browse.Visibility = Visibility.Collapsed; _watch.Visibility = Visibility.Visible;
                 _drawer.Visibility = Visibility.Collapsed; _wantsPlay = true;
-                _liveClock.Reset(); _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>()); _overlayAdmissions = 0;
+                _liveClock.Reset(); _watchdog.Reset(); _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>()); _overlayAdmissions = 0;
                 _overlay.Visibility = _danmaku ? Visibility.Visible : Visibility.Collapsed;
                 WakeChrome(); _tick.Start(); PlaybackChanged?.Invoke(this, EventArgs.Empty); Focus(_play);
                 // The room and its chat remain usable when the streamer is
@@ -127,7 +147,13 @@ namespace BiliXbox.Controls
                         var media = pendingMedia = MediaSource.CreateFromAdaptiveMediaSource(adaptive);
                         DisposeMedia(); _adaptive = adaptive; adaptive = null; _playHttp = http; http = null; _player = player; _playback = playback; _liveMediaSource = media;
                         adopted = true;
-                        RecordLive("source-attached");
+                        var now = DateTimeOffset.UtcNow;
+                        var expires = LivePlaybackWatchdog.ParseExpiry(address);
+                        _watchdog.Attach(now, expires);
+                        RecordLive("source-attached expiresInMin=" + (expires.HasValue
+                            ? (expires.Value - now).TotalMinutes.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : "unknown")
+                            + " refreshInMin=" + (_watchdog.RefreshAt - now).TotalMinutes.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                            + " host=" + uri.Host);
                         _surface.SetMediaPlayer(player); player.Source = media;
                         _qualityButton.Content = string.IsNullOrWhiteSpace(playback.QualityLabel) ? "画质" : playback.QualityLabel;
                         if (_wantsPlay) player.Play();
@@ -266,10 +292,21 @@ namespace BiliXbox.Controls
             try { playing = _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing; }
             catch (Exception ex) { RecordLive("state-read-failed", ex); DisposeMedia(); SetBuffering(false); _watchNotice.Text = "直播播放器已停止，可在画质面板重新加载。"; }
             if (playing) _liveClock.Start(); else _liveClock.Stop();
+            ObserveLiveWatchdog(playing);
             _overlay.Update(_liveClock.Elapsed, playing && _danmaku);
             FlushMessages();
             if (_pane == Pane.None && !_editing && playing && DateTimeOffset.UtcNow - _lastActivity > TimeSpan.FromSeconds(5))
                 _chrome.Visibility = Visibility.Collapsed;
+        }
+        private void ObserveLiveWatchdog(bool playing)
+        {
+            if (_room == null || !_room.IsLive) return;
+            double position = 0; bool hasPlayer = _player != null;
+            try { if (hasPlayer) position = _player.PlaybackSession.Position.TotalSeconds; } catch (Exception) { hasPlayer = false; }
+            string reason = _watchdog.Sample(DateTimeOffset.UtcNow, _wantsPlay, _liveReloadInFlight, hasPlayer, playing, position);
+            if (reason == null) return;
+            if (reason != "expiry") _watchNotice.Text = "直播画面停住了，正在自动重新连接…";
+            ReloadLiveSource(reason);
         }
         private void SetBuffering(bool value)
         { _loading.IsActive = value; ((FrameworkElement)_loading.Tag).Visibility = value ? Visibility.Visible : Visibility.Collapsed; }
@@ -347,7 +384,7 @@ namespace BiliXbox.Controls
             _sending = false; _giftBusy = false; _send.IsEnabled = true;
             LiveResourceCleanup.Run(ex => RecordLive("cancel-failed", ex), () => Cancel(ref _roomCts), () => Cancel(ref _playCts), StopChatConnection);
             _queuedMessages.Clear();
-            _tick.Stop(); DisposeMedia(); _liveClock.Reset(); _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>());
+            _tick.Stop(); DisposeMedia(); _watchdog.Reset(); _liveClock.Reset(); _overlay.Reset(); _overlay.Load(Array.Empty<DanmakuItem>());
             _room = null; _playback = null; _quote = null; _selectedGift = null; _pane = Pane.None; _editing = false; ResetChatScroll();
             _drawer.Visibility = Visibility.Collapsed; _watch.Visibility = Visibility.Collapsed; _browse.Visibility = Visibility.Visible;
             SetBuffering(false); if (wasPlaying) PlaybackChanged?.Invoke(this, EventArgs.Empty);

@@ -27,7 +27,7 @@ namespace BiliXbox.Controls
             Windows.Storage.ApplicationData.Current.LocalSettings.Values.Clear();
             var video = new DanmakuSettingsStore();video.Save(DanmakuSettings.Default.With(opacity:.75));
             var page=new LiveHubView();page.InitializeLiveDanmakuSettings();page.RenderLiveDanmakuSettings();
-            Check(page.rows.Count==14&&page.focus==page._liveSettingButtons["enabled"],"settings initially focus first actionable row");
+            Check(page.rows.Count==16&&page.focus==page._liveSettingButtons["enabled"],"settings initially focus first actionable row");
             Check(page._liveSettings.Opacity==.9&&!page._liveSettings.SmartMask,"live uses independent defaults");
             var font=page._liveSettingButtons["font"];page.focus=font;font.Click();
             Check(page.focus==font&&page._liveSettingButtons["font"]==font,"A cycles a value without rebuilding focused row");
@@ -40,7 +40,7 @@ namespace BiliXbox.Controls
             reopened._liveSettingButtons["reset"].Click();
             Check(reopened._danmaku&&reopened._liveSettings.FontScale==1&&!reopened._liveSettings.SmartMask,"reset restores live preferences and enables overlay");
             Check(video.Load().Opacity==.75,"reset cannot modify video preferences");
-            Check(reopened.focus==reopened.rows[0]&&reopened.rows.Count==14,"reset preserves existing control tree");
+            Check(reopened.focus==reopened.rows[0]&&reopened.rows.Count==16,"reset preserves existing control tree");
             return "PASS: "+checks+" production live settings-panel focus, immediate rendering, persistence and reset checks (UI substitutes).";
         }
     }

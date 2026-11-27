@@ -139,6 +139,14 @@ namespace BiliXbox
                             new PlaybackBufferRange(range.Start.TotalSeconds, range.End.TotalSeconds)).ToArray();
                         _bufferSamplePosition = position.TotalSeconds;
                         _bufferedPlaybackSeconds = PlaybackBufferRanges.ContiguousSeconds(position.TotalSeconds, ranges);
+                        double splitSeconds;
+                        if (TrySplitTransportBuffer(out splitSeconds))
+                        {
+                            // A byte-stream source reports the whole file as
+                            // buffered. Use the HTTP cache ahead of the decoder.
+                            _bufferedPlaybackSeconds = splitSeconds;
+                            ranges = new[] { new PlaybackBufferRange(position.TotalSeconds, position.TotalSeconds + splitSeconds) };
+                        }
                     }
                     catch (Exception) { _bufferedPlaybackSeconds = -1; }
                 }

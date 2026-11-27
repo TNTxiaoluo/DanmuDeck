@@ -180,9 +180,11 @@ namespace BiliXbox.Services
             if (video == null || video.Aid <= 0 || cid <= 0) return Array.Empty<SubtitleTrack>();
             var data = RequireData(await GetSignedJsonAsync("/x/player/wbi/v2", new Dictionary<string,string>
                 { ["aid"] = Invariant(video.Aid), ["cid"] = Invariant(cid) }, ct));
+            PublishSubtitleDiagnostic(data, video, cid);
             return (data["subtitle"]?["subtitles"] as JArray ?? new JArray()).Select(item => new SubtitleTrack
-                { Language = Str(item, "lan"), Label = PlainText(Str(item, "lan_doc")), Url = ImageUrl(Str(item, "subtitle_url")) })
-                .Where(item => TrustedSubtitleUrl(item.Url)).Take(40).ToArray();
+                { Language = Str(item, "lan"), Label = SubtitleLabel(item), Url = ImageUrl(Str(item, "subtitle_url")) })
+                .Where(item => TrustedSubtitleUrl(item.Url))
+                .OrderBy(item => item.Language.StartsWith("ai-", StringComparison.OrdinalIgnoreCase) ? 1 : 0).Take(40).ToArray();
         }
 
         private static bool TrustedSubtitleUrl(string url)
@@ -203,6 +205,53 @@ namespace BiliXbox.Services
                 End = (double?)item["to"] ?? -1, Text = PlainText(Str(item, "content")) })
                 .Where(cue => !double.IsNaN(cue.Start) && !double.IsInfinity(cue.Start) && cue.Start >= 0 && cue.End > cue.Start && cue.End <= 604800)
                 .OrderBy(cue => cue.Start).ToArray();
+        }
+
+        // Diagnostic only: every subtitle entry the player endpoint returned,
+        // with the fields that distinguish AI tracks, and whether the current
+        // URL filter would keep it. Text content is never logged.
+        private void PublishSubtitleDiagnostic(JToken data, VideoDetail video, long cid)
+        {
+            try
+            {
+                var subtitle = data?["subtitle"];
+                var list = subtitle?["subtitles"] as JArray ?? new JArray();
+                var report = new System.Text.StringBuilder("subtitle-catalog bvid=" + video.Bvid + " cid=" + cid + " auth=" + IsLoggedIn
+                    + " count=" + list.Count + " allowSubmit=" + Str(subtitle, "allow_submit")
+                    + " needLogin=" + Str(data, "need_login_subtitle") + " keys=" + string.Join(",", (subtitle as JObject)?.Properties().Select(p => p.Name) ?? Enumerable.Empty<string>()));
+                foreach (var item in list.Take(20))
+                {
+                    string url = Str(item, "subtitle_url");
+                    string normalized = ImageUrl(url);
+                    Uri uri;
+                    string host = Uri.TryCreate(normalized, UriKind.Absolute, out uri) ? uri.Host : "";
+                    report.Append("\nsubtitle lan=").Append(SubtitleDiagnosticText(Str(item, "lan"))).Append(" doc=").Append(SubtitleDiagnosticText(Str(item, "lan_doc")))
+                        .Append(" id=").Append(SubtitleDiagnosticText(Str(item, "id_str").Length > 0 ? Str(item, "id_str") : Str(item, "id")))
+                        .Append(" type=").Append(SubtitleDiagnosticText(Str(item, "type"))).Append(" aiType=").Append(SubtitleDiagnosticText(Str(item, "ai_type")))
+                        .Append(" aiStatus=").Append(SubtitleDiagnosticText(Str(item, "ai_status"))).Append(" lock=").Append(SubtitleDiagnosticText(Str(item, "is_lock")))
+                        .Append(" urlEmpty=").Append(url.Length == 0).Append(" urlScheme=").Append(url.StartsWith("//") ? "relative" : url.Length > 5 ? url.Substring(0, 5) : url)
+                        .Append(" host=").Append(SubtitleDiagnosticText(host)).Append(" kept=").Append(TrustedSubtitleUrl(normalized))
+                        .Append(" fields=").Append(string.Join(",", (item as JObject)?.Properties().Select(p => p.Name) ?? Enumerable.Empty<string>()));
+                }
+                PublishPlaybackDiagnostic(report.ToString());
+            }
+            catch (Exception) { /* Diagnostics never break subtitles. */ }
+        }
+
+        // AI tracks (lan "ai-zh", ai_status set) carry the same lan_doc as
+        // human subtitles ("中文"); mark them so viewers can tell them apart.
+        private static string SubtitleLabel(JToken item)
+        {
+            string label = PlainText(Str(item, "lan_doc"));
+            bool ai = Str(item, "lan").StartsWith("ai-", StringComparison.OrdinalIgnoreCase) || Str(item, "ai_status").Length > 0 && Str(item, "ai_status") != "0";
+            if (label.Length == 0) label = Str(item, "lan");
+            return ai && label.IndexOf("AI", StringComparison.OrdinalIgnoreCase) < 0 && label.IndexOf("自动", StringComparison.Ordinal) < 0 ? label + "（AI 字幕）" : label;
+        }
+
+        private static string SubtitleDiagnosticText(string value)
+        {
+            value = System.Text.RegularExpressions.Regex.Replace(value ?? "", @"[\r\n\t]", " ");
+            return value.Length > 60 ? value.Substring(0, 60) : value;
         }
     }
 }

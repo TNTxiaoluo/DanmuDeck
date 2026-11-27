@@ -14,6 +14,7 @@ namespace BiliXbox.Models
         public string OwnerAvatarUrl { get; set; } = "";
         public string PlayText { get; set; } = "";
         public string DurationText { get; set; } = "";
+        public string Description { get; set; } = "";
     }
 
     public sealed class SearchPage
@@ -30,7 +31,15 @@ namespace BiliXbox.Models
     {
         public long Cid { get; set; }
         public long? ReplyCount { get; set; }
-        public string Description { get; set; } = "";
+        public long? ViewCount { get; set; }
+        public long? DanmakuCount { get; set; }
+        public long? LikeCount { get; set; }
+        public long? CoinCount { get; set; }
+        public long? FavoriteCount { get; set; }
+        public DateTimeOffset? PublishTime { get; set; }
+        // Uploader/platform statement shown under the stats (argue_info).
+        public string Statement { get; set; } = "";
+        public bool NoReprint { get; set; }
         public IReadOnlyList<VideoPart> Parts { get; set; } = Array.Empty<VideoPart>();
         public IReadOnlyList<CollectionEpisode> CollectionEpisodes { get; set; } = Array.Empty<CollectionEpisode>();
     }
@@ -114,6 +123,20 @@ namespace BiliXbox.Models
         public PlaybackQualityFailure QualityFailure { get; set; }
         public bool Hdr10DisplayVerified { get; set; }
         public bool IsHdr10 { get; set; }
+        // Experimental: Bilibili qn 126 Dolby Vision (Profile 5, no HDR10 base
+        // layer), played as fragmented MP4 under an HDMI Dolby Vision mode.
+        public bool IsDolbyVision { get; set; }
+        // Dolby Vision Profile 8.x (qn 126 as plain hvc1/hev1): played as its
+        // HEVC Main10 base layer (HDR10 or HLG) under HDR output; IsHdr10 is set.
+        public bool DolbyVisionBaseLayer { get; set; }
+        // Profile 8.4: the HLG base layer is relabelled BT.2020 SDR in memory
+        // and shown in SDR (Xbox cannot decode HLG-signalled HEVC).
+        public bool DolbyVisionHlgAsSdr { get; set; }
+        // Profile 8.4: decoded by FFmpegInteropX (FFmpeg D3D11 hardware decoding)
+        // keeping HLG under HDR output; CodecFallback is the SDR variant.
+        public bool DolbyVisionHlgFfmpeg { get; set; }
+        // Played from the offline cache (OfflineCache entry id); no network source.
+        public string OfflineEntryId { get; set; } = "";
         public bool UsesSdrToneMapping { get; set; }
         public int VideoBitsPerChannel { get; set; }
         // One compatible source from this same authorized response. Never points

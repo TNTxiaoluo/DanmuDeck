@@ -40,6 +40,8 @@ namespace BiliXbox.Services
                         || end < start || end - start >= DashSegmentIndex.MaximumIndexBytes) throw new InvalidDataException("媒体索引范围无效。");
                     var candidates = routes.CandidateUris(uri);
                     if (candidates.Count == 0) throw new InvalidDataException("媒体索引缺少已验证的播放线路。");
+                    if (((string)representation.Attribute("id") ?? "").StartsWith("video-", StringComparison.Ordinal))
+                        await DescribeInitializationAsync(http, representation, segment, ns, candidates, token, diagnostic);
                     DashSegmentIndex index = null; Exception last = null;
                     foreach (var candidate in candidates.Take(3))
                     {
@@ -65,7 +67,42 @@ namespace BiliXbox.Services
             }
         }
 
+        // Diagnostic only: record the initialization segment's box structure
+        // (sample entry, hvcC, colr, Dolby Vision configuration). Failures are
+        // logged and never affect playback or index conversion.
+        private static async Task DescribeInitializationAsync(HttpClient http, XElement representation, XElement segment,
+            XNamespace ns, IReadOnlyList<Uri> candidates, CancellationToken token, Action<string> diagnostic)
+        {
+            if (diagnostic == null) return;
+            string track = (string)representation.Attribute("id") ?? "unknown";
+            try
+            {
+                var parts = ((string)segment.Element(ns + "Initialization")?.Attribute("range") ?? "").Split('-');
+                ulong start, end;
+                if (parts.Length != 2 || !ulong.TryParse(parts[0], out start) || !ulong.TryParse(parts[1], out end)
+                    || end < start || end - start >= 262144)
+                { diagnostic("init-structure track=" + track + " skipped=invalid-range"); return; }
+                using (var attempt = CancellationTokenSource.CreateLinkedTokenSource(token))
+                {
+                    attempt.CancelAfter(TimeSpan.FromSeconds(8));
+                    var bytes = (await FetchBytesAsync(http, candidates[0], start, (int)(end - start + 1), attempt.Token)).Item1;
+                    diagnostic("init-structure track=" + track + " codecs=" + System.Text.RegularExpressions.Regex.Replace(
+                        (string)representation.Attribute("codecs") ?? "", "[^A-Za-z0-9._-]", "")
+                        + " bytes=" + bytes.Length + " " + Mp4InitDescriber.Describe(bytes));
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (!(ex is OutOfMemoryException))
+            { diagnostic("init-structure track=" + track + " failed=" + ex.GetType().Name + " hresult=" + ex.HResult.ToString("X8")); }
+        }
+
         private static async Task<DashSegmentIndex> FetchAsync(HttpClient http, Uri uri, ulong start, int length, CancellationToken token)
+        {
+            var fetched = await FetchBytesAsync(http, uri, start, length, token);
+            return DashSegmentIndex.Parse(fetched.Item1, start, fetched.Item2);
+        }
+
+        private static async Task<Tuple<byte[], ulong>> FetchBytesAsync(HttpClient http, Uri uri, ulong start, int length, CancellationToken token)
         {
             using (var request = new HttpRequestMessage(HttpMethod.Get, uri))
             {
@@ -88,7 +125,7 @@ namespace BiliXbox.Services
                             part.CopyTo(0, bytes, received, (int)part.Length); received += (int)part.Length;
                         }
                     }
-                    return DashSegmentIndex.Parse(bytes, start, range.Length.Value);
+                    return Tuple.Create(bytes, range.Length.Value);
                 }
             }
         }

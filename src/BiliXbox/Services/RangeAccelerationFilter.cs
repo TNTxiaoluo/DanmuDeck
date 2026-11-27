@@ -23,12 +23,18 @@ namespace BiliXbox.Services
         private readonly DownloadSpeedMeter _meter;
         private readonly Action<string> _trace;
         private readonly ParallelRangeDownloader _downloader;
+        private readonly SequentialPrefetchCache _prefetch;
+        private readonly Dictionary<string, (string[] Urls, KeyValuePair<string, string>[] Headers, ulong Total)> _prefetchSources
+            = new Dictionary<string, (string[], KeyValuePair<string, string>[], ulong)>(StringComparer.Ordinal);
         private readonly OrderedRangeReadStream.WaitStatistics _waits = new OrderedRangeReadStream.WaitStatistics();
         private readonly object _sampleGate = new object();
         private (TimeSpan? Duration, int Status, string Host) _lastMediaRequest;
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private int _nextRange;
-        private int _disposed, _accelerated, _fallback, _bypass, _bodyFailed;
+        private int _disposed, _accelerated, _fallback, _bypass, _bodyFailed, _producerFailures;
+        // Native fallback for the whole source only after repeated failures:
+        // one transient overseas timeout must not disable acceleration.
+        private const int BypassAfterFailures = 3;
         private bool Bypassed => Volatile.Read(ref _bypass) != 0;
         internal bool HasBodyFailure => Volatile.Read(ref _bodyFailed) != 0;
         internal (TimeSpan? Duration, int Status, string Host) LastMediaRequest
@@ -36,18 +42,45 @@ namespace BiliXbox.Services
         internal string WaitDiagnostic => (Bypassed ? "加速已转原生" : "并发加速")
             + " · 读流待数据 " + _waits.ReadWaiters + " · 预读等消费 " + _waits.WindowWaiters;
         internal double CurrentDownloadBytesPerSecond => _meter.CurrentDownloadBytesPerSecond;
-        internal string Diagnostic => "acceleration=on parallel=4 acceleratedRanges=" + Volatile.Read(ref _accelerated)
+        internal string Diagnostic => "acceleration=on parallel=" + ParallelRangeDownloader.Concurrency + " acceleratedRanges=" + Volatile.Read(ref _accelerated)
             + " nativeFallbacks=" + Volatile.Read(ref _fallback) + " reservedBytes=" + _downloader.ReservedBytes
             + " accelerationReceivedBytes=" + _meter.TotalDownloadedBytes + " bypass=" + Bypassed
             + " bodyFailed=" + HasBodyFailure + _downloader.PerformanceDiagnostic
             + " readWaiters=" + _waits.ReadWaiters + " readWaitMs=" + _waits.ReadMilliseconds
-            + " windowWaiters=" + _waits.WindowWaiters + " windowWaitMs=" + _waits.WindowMilliseconds;
+            + " windowWaiters=" + _waits.WindowWaiters + " windowWaitMs=" + _waits.WindowMilliseconds + _prefetch.Diagnostic;
 
         internal RangeAccelerationFilter(IHttpFilter inner, DashRoutePolicy routes, DownloadSpeedMeter meter,
             Action<string> trace = null)
         {
             _inner = inner; _routes = routes; _meter = meter; _trace = trace;
             _downloader = new ParallelRangeDownloader(FetchAsync);
+            _prefetch = new SequentialPrefetchCache(FetchPieceAsync, trace == null ? null : new Action<string>(detail => trace(detail + " utc=" + DateTimeOffset.UtcNow.ToString("O"))));
+        }
+
+        // One prefetch piece, downloaded over the same verified parallel routes
+        // and media headers as the request that started the window.
+        private async Task<byte[]> FetchPieceAsync(string key, ulong start, int length, CancellationToken token)
+        {
+            (string[] Urls, KeyValuePair<string, string>[] Headers, ulong Total) source;
+            lock (_prefetchSources) if (!_prefetchSources.TryGetValue(key, out source)) return null;
+            if (Bypassed) return null;
+            using (var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetime.Token))
+            {
+                var trace = TraceRange(start, length);
+                _context.Value = new RequestContext { Headers = source.Headers, Trace = trace };
+                trace?.Invoke("prefetch-piece-start");
+                var result = await _downloader.DownloadAsync(source.Urls, start, length, linked.Token, trace: trace).ConfigureAwait(false);
+                return result?.Bytes;
+            }
+        }
+
+        private static HttpResponseMessage CachedResponse(HttpRequestMessage request, byte[] bytes, ulong start, ulong total)
+        {
+            var content = new HttpBufferContent(bytes.AsBuffer());
+            content.Headers.ContentLength = (ulong)bytes.Length;
+            content.Headers.ContentRange = new HttpContentRangeHeaderValue(start, start + (ulong)bytes.Length - 1, total);
+            content.Headers.TryAppendWithoutValidation("Content-Type", "video/mp4");
+            return new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = content, RequestMessage = request };
         }
 
         public IAsyncOperationWithProgress<HttpResponseMessage, HttpProgress> SendRequestAsync(HttpRequestMessage request)
@@ -58,6 +91,10 @@ namespace BiliXbox.Services
                     var ct = job.Token; ct.ThrowIfCancellationRequested();
                     string range; ulong start; int length;
                     var candidates = _routes.CandidateUris(request.RequestUri);
+                    // Add the same signed path on Bilibili's other upos mirrors.
+                    // The downloader verifies each mirror's bytes before use.
+                    if (candidates.Count > 0 && _routes.ResourceKey(request.RequestUri) == "video")
+                        candidates = CdnMirrors.Expand(candidates);
                     if (string.Equals(request.Method?.Method, "GET", StringComparison.OrdinalIgnoreCase)
                         && !Bypassed && candidates.Count > 0 && _routes.ResourceKey(request.RequestUri) == "video"
                         && !request.Headers.ContainsKey("Authorization") && !request.Headers.ContainsKey("Cookie")
@@ -69,6 +106,25 @@ namespace BiliXbox.Services
                         var headers = request.Headers.Where(pair => !string.Equals(pair.Key, "Range", StringComparison.OrdinalIgnoreCase)
                             && !string.Equals(pair.Key, "Host", StringComparison.OrdinalIgnoreCase)).ToArray();
                         var context = new RequestContext { Headers = headers, Trace = TraceRange(start, length) };
+                        string fileKey = request.RequestUri.AbsolutePath;
+                        var urls = candidates.Select(uri => uri.AbsoluteUri).ToArray();
+                        ulong knownTotal = 0;
+                        lock (_prefetchSources)
+                        {
+                            if (_prefetchSources.TryGetValue(fileKey, out var known)) knownTotal = known.Total;
+                            _prefetchSources[fileKey] = (urls, headers, knownTotal);
+                        }
+                        if (knownTotal > 0)
+                        {
+                            var cached = await _prefetch.TryGetAsync(fileKey, start, length, ct).ConfigureAwait(false);
+                            if (cached != null)
+                            {
+                                context.Trace?.Invoke("prefetch-hit bytes=" + cached.Length);
+                                Interlocked.Increment(ref _accelerated);
+                                _prefetch.Advance(fileKey, start, start + (ulong)length, knownTotal);
+                                return CachedResponse(request, cached, start, knownTotal);
+                            }
+                        }
                         _context.Value = context;
                         try
                         {
@@ -87,6 +143,8 @@ namespace BiliXbox.Services
                                 content.Headers.ContentRange = new HttpContentRangeHeaderValue(start, start + (ulong)length - 1, result.Total);
                                 content.Headers.TryAppendWithoutValidation("Content-Type", result.ContentType ?? "video/mp4");
                                 Interlocked.Increment(ref _accelerated);
+                                lock (_prefetchSources) _prefetchSources[fileKey] = (urls, headers, result.Total);
+                                _prefetch.Advance(fileKey, start, start + (ulong)length, result.Total);
                                 return new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = content, RequestMessage = request };
                             }
                             stream.Dispose();
@@ -125,11 +183,14 @@ namespace BiliXbox.Services
             {
                 if (!stream.ProducerToken.IsCancellationRequested)
                 {
-                    Interlocked.Exchange(ref _bypass, 1);
                     // Before committing the response, the same request can be
-                    // retried natively without replacing the playback source.
-                    if (ready.Task.Status == TaskStatus.RanToCompletion && ready.Task.Result != null)
-                        Interlocked.Exchange(ref _bodyFailed, 1);
+                    // retried natively without replacing the playback source,
+                    // so only repeated failures disable acceleration. A failure
+                    // after the 206 headers broke a delivered body: stop at once.
+                    bool committed = ready.Task.Status == TaskStatus.RanToCompletion && ready.Task.Result != null;
+                    if (committed || Interlocked.Increment(ref _producerFailures) >= BypassAfterFailures)
+                        Interlocked.Exchange(ref _bypass, 1);
+                    if (committed) Interlocked.Exchange(ref _bodyFailed, 1);
                 }
                 stream.Complete(ex);
                 if (ready.TrySetException(ex)) stream.Dispose();
@@ -202,6 +263,6 @@ namespace BiliXbox.Services
             }
         }
 
-        public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) _lifetime.Cancel(); }
+        public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) { _lifetime.Cancel(); _prefetch.Dispose(); } }
     }
 }

@@ -57,6 +57,9 @@ namespace BiliXbox.Controls
             SizeChanged += OnSizeChanged;
         }
 
+        // Installed by the app; offline tests leave it unset (no edge drawn).
+        internal static IDanmakuStrokeRenderer StrokeRenderer { get; set; }
+
         public DanmakuSettings Settings => _settings;
         internal Func<IReadOnlyList<CommentContentPart>, double, double, int, FrameworkElement> RichContentFactory { get; set; }
         public int IgnoredRuleCount => _filter.IgnoredRuleCount;
@@ -72,14 +75,20 @@ namespace BiliXbox.Controls
                 previous.ShowBottom != _settings.ShowBottom || previous.ShowColor != _settings.ShowColor || previous.MergeDuplicates != _settings.MergeDuplicates;
             bool relayout = previous.AreaFraction != _settings.AreaFraction || previous.FontScale != _settings.FontScale ||
                 previous.AvoidCenter != _settings.AvoidCenter || previous.ShowScrolling != _settings.ShowScrolling ||
-                previous.ShowTop != _settings.ShowTop || previous.ShowBottom != _settings.ShowBottom;
+                previous.ShowTop != _settings.ShowTop || previous.ShowBottom != _settings.ShowBottom ||
+                previous.TopMargin != _settings.TopMargin;
             bool rebuild = refilter || relayout || previous.SpeedScale != _settings.SpeedScale ||
-                previous.PreventOverlap != _settings.PreventOverlap || previous.DensityLimit != _settings.DensityLimit;
+                previous.PreventOverlap != _settings.PreventOverlap || previous.DensityLimit != _settings.DensityLimit
+                || previous.StrokeStyle != _settings.StrokeStyle;
             if (!rebuild)
             {
                 // Opacity and person-mask preferences never re-run cloud regexes,
                 // rebuild a timeline, or measure an otherwise unchanged message.
-                foreach (var visual in _visuals) visual.Element.Opacity = _settings.Opacity;
+                foreach (var visual in _visuals)
+                {
+                    visual.Element.Opacity = _settings.Opacity;
+                    if (visual.StrokeHost != null) visual.StrokeHost.Opacity = _settings.Opacity;
+                }
                 return;
             }
             var retained = new List<Entry>();
@@ -267,7 +276,11 @@ namespace BiliXbox.Controls
                 if (visual.Mode == 1)
                 {
                     double x = ActualWidth - visual.Speed * (seconds - visual.Start);
-                    if (Math.Abs(x - visual.LastX) >= 0.25) { visual.Translation.X = x; visual.LastX = x; }
+                    if (Math.Abs(x - visual.LastX) >= 0.25)
+                    {
+                        visual.Translation.X = x; visual.LastX = x;
+                        if (visual.StrokeShown) visual.StrokeTranslation.X = x;
+                    }
                 }
             }
         }
@@ -280,6 +293,7 @@ namespace BiliXbox.Controls
                 if (seconds >= visual.End)
                 {
                     Children.Remove(visual.Element);
+                    if (visual.StrokeShown) Children.Remove(visual.StrokeHost);
                     _visuals.RemoveAt(i);
                     RecycleVisual(visual);
                 }
@@ -334,10 +348,27 @@ namespace BiliXbox.Controls
             if (entry.Mode != 1) x = (ActualWidth - width) / 2;
             double y = Rows(entry.Mode)[lane];
             visual.Translation.X = x;
+            visual.StrokeTranslation.X = x;
             SetTop(element, y);
             // Fixed comments stay above scrolling comments regardless of arrival
             // order, including when a pooled TextBlock changes comment type.
             SetZIndex(element, entry.Mode == 1 ? 0 : 1);
+            visual.StrokeShown = false;
+            if (ReferenceEquals(element, block) && _settings.StrokeStyle != DanmakuStrokeStyle.None && StrokeRenderer != null)
+            {
+                try
+                {
+                    if (visual.StrokeHost == null) visual.StrokeHost = StrokeRenderer.Create(block);
+                    StrokeRenderer.Apply(visual.StrokeHost, _settings.StrokeStyle);
+                    visual.StrokeHost.Opacity = _settings.Opacity;
+                    visual.StrokeHost.RenderTransform = visual.StrokeTranslation;
+                    SetLeft(visual.StrokeHost, 0); SetTop(visual.StrokeHost, y);
+                    SetZIndex(visual.StrokeHost, entry.Mode == 1 ? 0 : 1);
+                    Children.Add(visual.StrokeHost);
+                    visual.StrokeShown = true;
+                }
+                catch (Exception) { visual.StrokeShown = false; }
+            }
             Children.Add(element);
             visual.Entry = entry; visual.Mode = entry.Mode; visual.Lane = lane; visual.Y = y;
             visual.Start = entry.Seconds; visual.End = end; visual.Width = width; visual.Speed = speed; visual.LastX = x;
@@ -585,6 +616,10 @@ namespace BiliXbox.Controls
             public FrameworkElement Element;
             public TextBlock TextElement;
             public TranslateTransform Translation;
+            // Optional edge (outline/shadow) drawn beneath a plain text comment.
+            public FrameworkElement StrokeHost;
+            public bool StrokeShown;
+            public readonly TranslateTransform StrokeTranslation = new TranslateTransform();
             public int Mode;
             public int Lane;
             public double Start;
@@ -594,5 +629,17 @@ namespace BiliXbox.Controls
             public double Y, LastX;
             public Entry Entry;
         }
+    }
+}
+
+namespace BiliXbox.Controls
+{
+    // Draws a comment's outline or shadow on a separate element placed beneath
+    // the text. Kept behind an interface so the overlay has no composition
+    // dependency in offline tests.
+    internal interface IDanmakuStrokeRenderer
+    {
+        FrameworkElement Create(TextBlock text);
+        void Apply(FrameworkElement host, DanmakuStrokeStyle style);
     }
 }

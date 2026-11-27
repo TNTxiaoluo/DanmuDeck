@@ -39,6 +39,8 @@ namespace BiliXbox
 {
     public sealed partial class MainPage
     {
+        // The HDR split transport is not part of this DASH fixture.
+        private bool TrySplitTransportBuffer(out double seconds) { seconds = -1; return false; }
         private bool _watching = true, _wantsPlayback = true, _disposed, _sourceLoading;
         private bool _seeking, _dialogOpen, _inputPaneVisible, _creatorVisible, _libraryVisible;
         private bool _sessionBuffering, _displaySuspended;

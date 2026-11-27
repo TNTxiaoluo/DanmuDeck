@@ -17,7 +17,11 @@ namespace BiliXbox.Services
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private HdmiDisplayInformation _display;
         private bool _ownsMode;
-        private bool _ownedHdr, _ownedEotfKnown;
+        private bool _ownedHdr, _ownedEotfKnown, _ownedDolbyVision;
+        // Follow-system policy: the system mode seen while the app owned no
+        // mode, and the HDR10 descriptor requested to match it.
+        private HdmiDisplayMode _systemMode, _hdrMode, _dolbyVisionMode;
+        private int _deferredResetVersion;
         private int _resetVersion;
 
         internal bool IsXbox
@@ -30,6 +34,7 @@ namespace BiliXbox.Services
         }
 
         internal bool Hdr10Active { get; private set; }
+        internal bool DolbyVisionActive => _ownsMode && _ownedDolbyVision;
         internal bool FourKActive { get; private set; }
         internal string FailureReason { get; private set; } = "";
         internal string Diagnostic { get; private set; } = "";
@@ -37,6 +42,8 @@ namespace BiliXbox.Services
         internal async Task<bool> PrepareAsync(PlaybackInfo playback, CancellationToken ct)
         {
             if (playback == null) throw new ArgumentNullException(nameof(playback));
+            // A new preparation supersedes a pending follow-system restore.
+            Interlocked.Increment(ref _deferredResetVersion);
             int resetVersion = Volatile.Read(ref _resetVersion);
             await _gate.WaitAsync(ct);
             string stage = "检查 HDMI 输出能力";
@@ -63,6 +70,13 @@ namespace BiliXbox.Services
                     await ResetCoreAsync();
                     return false;
                 }
+                // Experimental Dolby Vision: needs the HDMI Dolby Vision mode
+                // whatever the HDMI policy; failure falls back to the next source.
+                if (playback.IsDolbyVision) return await PrepareDolbyVisionAsync(ct, resetVersion);
+                // Follow-system policy: keep the system resolution and refresh
+                // rate, switching only HDR/SDR. If HDR10 cannot be matched, use per-source rules.
+                if (HdmiOutputSettings.FollowSystem && await PrepareFollowSystemAsync(playback, hdr, ct, resetVersion)) return true;
+                ct.ThrowIfCancellationRequested();
                 bool highResolution = width > 1920 || height > 1080;
                 if (!hdr && !highResolution)
                 {
@@ -239,8 +253,155 @@ namespace BiliXbox.Services
                 : await _display.RequestSetCurrentDisplayModeAsync(selected.Mode,
                     hdr ? HdmiDisplayHdrOption.Eotf2084 : HdmiDisplayHdrOption.EotfSdr);
             // Acquire cleanup ownership before cancellation or result reads.
-            if (changed) { _ownsMode = true; _ownedHdr = hdr; _ownedEotfKnown = true; }
+            if (changed) { _ownsMode = true; _ownedHdr = hdr; _ownedEotfKnown = true; _ownedDolbyVision = false; }
             return changed;
+        }
+
+        // Dolby Vision on Xbox is sent as low-latency Dolby Vision. The TV
+        // usually lists it on a single descriptor (for example 4K 59.94Hz), so
+        // this is the one case where the output resolution may differ from the
+        // system setting. An identical active Dolby Vision mode is kept.
+        private async Task<bool> PrepareDolbyVisionAsync(CancellationToken ct, int resetVersion)
+        {
+            if (!ApiInformation.IsTypePresent("Windows.Graphics.Display.Core.HdmiDisplayInformation"))
+            { FailureReason = "系统未提供 HDMI 显示模式接口，无法输出杜比视界"; return false; }
+            if (_display == null) _display = HdmiDisplayInformation.GetForCurrentView();
+            if (_display == null) { FailureReason = "暂时无法读取 Xbox 当前视图的 HDMI 显示能力"; return false; }
+            HdmiDisplayMode current = null;
+            try { current = _display.GetCurrentDisplayMode(); } catch (Exception) { }
+            if (!_ownsMode && current != null) _systemMode = current;
+            var system = _systemMode ?? current;
+            if (_ownsMode && _ownedDolbyVision && _dolbyVisionMode != null && current != null && _dolbyVisionMode.IsEqual(current))
+            {
+                Diagnostic = "action=dolby-vision-keep mode=" + new OutputCandidate(current).Description;
+                FourKActive = current.ResolutionWidthInRawPixels >= 3840 && current.ResolutionHeightInRawPixels >= 2160;
+                return true;
+            }
+            var candidates = new List<HdmiDisplayMode>();
+            foreach (var mode in _display.GetSupportedDisplayModes())
+            {
+                try { if (mode != null && !mode.StereoEnabled && mode.IsDolbyVisionLowLatencySupported && mode.RefreshRate <= 60.001) candidates.Add(mode); }
+                catch (Exception) { }
+            }
+            var target = candidates
+                .OrderBy(mode => system == null || !(mode.ResolutionWidthInRawPixels == system.ResolutionWidthInRawPixels
+                    && mode.ResolutionHeightInRawPixels == system.ResolutionHeightInRawPixels) ? 1 : 0)
+                .ThenBy(mode => system == null ? 0 : Math.Abs(mode.RefreshRate - system.RefreshRate))
+                .ThenByDescending(mode => (long)mode.ResolutionWidthInRawPixels * mode.ResolutionHeightInRawPixels)
+                .FirstOrDefault();
+            if (target == null) { FailureReason = "电视或 Xbox 当前未提供杜比视界输出模式"; return false; }
+            string description = new OutputCandidate(target).Description;
+            Diagnostic = "action=dolby-vision-request mode=" + description + " candidates=" + candidates.Count;
+            bool changed;
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                if (resetVersion != Volatile.Read(ref _resetVersion)) return false;
+                changed = await _display.RequestSetCurrentDisplayModeAsync(target, HdmiDisplayHdrOption.DolbyVisionLowLatency);
+                if (changed) { _ownsMode = true; _ownedHdr = true; _ownedEotfKnown = false; _ownedDolbyVision = true; }
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            { FailureReason = Error("启用杜比视界输出 " + description, ex); return false; }
+            ct.ThrowIfCancellationRequested();
+            if (!changed) { FailureReason = "Xbox 拒绝启用杜比视界输出 " + description; return false; }
+            HdmiDisplayMode now = null;
+            try { now = _display.GetCurrentDisplayMode(); } catch (Exception) { }
+            if (now == null || !target.IsEqual(now))
+            { FailureReason = "杜比视界输出确认失败：系统当前模式与请求不一致"; await ResetCoreAsync(); return false; }
+            _dolbyVisionMode = target;
+            FourKActive = target.ResolutionWidthInRawPixels >= 3840 && target.ResolutionHeightInRawPixels >= 2160;
+            return true;
+        }
+
+        // Follow-system policy: resolution and refresh rate always stay at the
+        // Xbox system setting; the player scales every source into it. Only the
+        // dynamic range changes: an HDR10 source requests the PQ descriptor of
+        // the same resolution and refresh rate, an SDR source returns to the
+        // system default. A target equal to the current mode is never requested.
+        private async Task<bool> PrepareFollowSystemAsync(PlaybackInfo playback, bool hdr, CancellationToken ct, int resetVersion)
+        {
+            if (hdr && !playback.Hdr10DisplayVerified) return false;
+            if (!ApiInformation.IsTypePresent("Windows.Graphics.Display.Core.HdmiDisplayInformation"))
+            {
+                if (hdr) return false;
+                Diagnostic = "action=follow-system-unmanaged";
+                return true;
+            }
+            try
+            {
+                if (_display == null) _display = HdmiDisplayInformation.GetForCurrentView();
+                if (_display == null) { if (hdr) return false; Diagnostic = "action=follow-system-unmanaged"; return true; }
+                HdmiDisplayMode current = null;
+                try { current = _display.GetCurrentDisplayMode(); } catch (Exception) { }
+                if (!_ownsMode && current != null) _systemMode = current;
+                if (!hdr)
+                {
+                    if (_ownsMode)
+                    {
+                        // Leaving HDR10 for an SDR source: the one switch this
+                        // policy makes for SDR, back to the system's own mode.
+                        Diagnostic = "action=follow-system-sdr-restore";
+                        await ResetCoreAsync();
+                        ct.ThrowIfCancellationRequested();
+                        if (_ownsMode || resetVersion != Volatile.Read(ref _resetVersion)) return false;
+                        try { current = _display.GetCurrentDisplayMode(); if (current != null) _systemMode = current; } catch (Exception) { }
+                    }
+                    else Diagnostic = "action=follow-system-keep range=SDR";
+                    var shown = current ?? _systemMode;
+                    if (shown != null) Diagnostic += " mode=" + new OutputCandidate(shown).Description;
+                    FourKActive = shown != null && shown.ResolutionWidthInRawPixels >= 3840 && shown.ResolutionHeightInRawPixels >= 2160;
+                    return true;
+                }
+                var system = _systemMode ?? current;
+                if (system == null) return false;
+                if (_ownsMode && _ownedEotfKnown && _ownedHdr && current != null && _hdrMode != null && _hdrMode.IsEqual(current))
+                {
+                    Diagnostic = "action=follow-system-keep range=HDR10 mode=" + new OutputCandidate(current).Description;
+                    Hdr10Active = true;
+                    FourKActive = current.ResolutionWidthInRawPixels >= 3840 && current.ResolutionHeightInRawPixels >= 2160;
+                    return true;
+                }
+                var candidates = new List<OutputCandidate>();
+                foreach (var mode in _display.GetSupportedDisplayModes())
+                {
+                    try
+                    {
+                        if (mode == null || mode.StereoEnabled || Math.Abs(mode.RefreshRate - system.RefreshRate) > 0.01) continue;
+                        var candidate = new OutputCandidate(mode);
+                        if (candidate.Pq) candidates.Add(candidate);
+                    }
+                    catch (Exception) { }
+                }
+                // Same resolution as the system first; only when the TV has no
+                // HDR10 descriptor there, the closest resolution at that rate.
+                var target = candidates.OrderBy(item => !(item.Mode.ResolutionWidthInRawPixels == system.ResolutionWidthInRawPixels
+                        && item.Mode.ResolutionHeightInRawPixels == system.ResolutionHeightInRawPixels))
+                    .ThenBy(item => Math.Abs((long)item.Mode.ResolutionWidthInRawPixels * item.Mode.ResolutionHeightInRawPixels
+                        - (long)system.ResolutionWidthInRawPixels * system.ResolutionHeightInRawPixels))
+                    .ThenBy(item => Math.Abs((int)item.Mode.BitsPerPixel - 30)).FirstOrDefault();
+                if (target == null) return false;
+                bool sameResolution = target.Mode.ResolutionWidthInRawPixels == system.ResolutionWidthInRawPixels
+                    && target.Mode.ResolutionHeightInRawPixels == system.ResolutionHeightInRawPixels;
+                if (_ownsMode && _ownedEotfKnown && _ownedHdr && current != null && target.Mode.IsEqual(current))
+                    Diagnostic = "action=follow-system-keep range=HDR10 mode=" + target.Description;
+                else
+                {
+                    Diagnostic = "action=follow-system-hdr mode=" + target.Description + (sameResolution ? "" : " resolution=closest");
+                    if (!await RequestAsync(target, true, false, ct, resetVersion)) return false;
+                    ct.ThrowIfCancellationRequested();
+                    var now = _display.GetCurrentDisplayMode();
+                    if (now == null || !target.Mode.IsEqual(now)) { await ResetCoreAsync(); return false; }
+                }
+                _hdrMode = target.Mode;
+                Hdr10Active = true;
+                FourKActive = target.Mode.ResolutionWidthInRawPixels >= 3840 && target.Mode.ResolutionHeightInRawPixels >= 2160;
+                return true;
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            {
+                FailureReason = Error("按系统设置准备 HDMI 输出", ex);
+                return false;
+            }
         }
 
         private static string Error(string stage, Exception ex) => stage + "失败 (0x"
@@ -268,8 +429,21 @@ namespace BiliXbox.Services
             }
         }
 
-        internal async Task ResetAsync()
+        // Follow-system policy: leaving playback returns an HDR10 output to the
+        // system mode after a short grace period, so moving between HDR videos
+        // or parts does not cause two HDMI handshakes. An SDR output is already
+        // the system mode and needs nothing. Force (background, exit) is immediate.
+        internal static TimeSpan FollowSystemRestoreDelay = TimeSpan.FromSeconds(8);
+
+        internal async Task ResetAsync(bool force = false)
         {
+            if (!force && HdmiOutputSettings.FollowSystem && IsXbox)
+            {
+                if (!_ownsMode) return;
+                int deferred = Interlocked.Increment(ref _deferredResetVersion);
+                await Task.Delay(FollowSystemRestoreDelay);
+                if (deferred != Volatile.Read(ref _deferredResetVersion) || !_ownsMode) return;
+            }
             Interlocked.Increment(ref _resetVersion);
             await _gate.WaitAsync();
             try { await ResetCoreAsync(); }
@@ -285,6 +459,7 @@ namespace BiliXbox.Services
             {
                 await _display.SetDefaultDisplayModeAsync();
                 _ownsMode = false;
+                _hdrMode = null; _dolbyVisionMode = null; _ownedDolbyVision = false;
             }
             catch (Exception)
             {

@@ -18,7 +18,8 @@ namespace BiliXbox.Services
     /// </summary>
     public sealed class HttpRandomAccessStream : IRandomAccessStream
     {
-        private const uint BlockSize = 256 * 1024;
+        private const uint DefaultBlockSize = 256 * 1024;
+        private uint BlockSize => _blocks.BlockBytes;
         private readonly Uri _uri;
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private readonly SemaphoreSlim _readGate = new SemaphoreSlim(1, 1);
@@ -46,15 +47,24 @@ namespace BiliXbox.Services
             return OpenAsync(uri, new DownloadSpeedMeter(), ct);
         }
 
-        internal static async Task<HttpRandomAccessStream> OpenAsync(Uri uri, DownloadSpeedMeter downloadSpeed,
+        internal static Task<HttpRandomAccessStream> OpenAsync(Uri uri, DownloadSpeedMeter downloadSpeed,
             CancellationToken ct)
+            => OpenAsync(uri, downloadSpeed, ct, DefaultBlockSize, null);
+
+        // blockBytes and wrapFilter serve the HDR10 split transport: larger
+        // blocks let a wrapping RangeAccelerationFilter split each request
+        // into parallel multi-CDN chunks. wrapFilter receives this stream's own
+        // HTTP protocol filter and returns the filter its HttpClient uses.
+        internal static async Task<HttpRandomAccessStream> OpenAsync(Uri uri, DownloadSpeedMeter downloadSpeed,
+            CancellationToken ct, uint blockBytes, Func<IHttpFilter, IHttpFilter> wrapFilter)
         {
             if (uri == null) throw new ArgumentNullException(nameof(uri));
             if (downloadSpeed == null) throw new ArgumentNullException(nameof(downloadSpeed));
             if (!uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps)
                 throw new ArgumentException("视频地址必须使用 HTTPS。", nameof(uri));
+            if (blockBytes < 64 * 1024 || blockBytes > 8 * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(blockBytes));
 
-            var stream = new HttpRandomAccessStream(uri, downloadSpeed: downloadSpeed);
+            var stream = new HttpRandomAccessStream(uri, new BlockCache(uri, downloadSpeed, blockBytes, wrapFilter), downloadSpeed);
             try
             {
                 await stream.GetBlockAsync(0, ct).ConfigureAwait(false);
@@ -66,6 +76,78 @@ namespace BiliXbox.Services
                 stream.Dispose();
                 throw;
             }
+        }
+
+        // Number of 256 KiB blocks fetched ahead of the reader, shared by all
+        // clones. One block suits muxed SD/HD MP4; a high-bitrate split 4K
+        // video track needs several parallel range requests to keep up.
+        internal int ReadAheadBlocks
+        {
+            get { return _blocks.ReadAheadBlocks; }
+            set { _blocks.ReadAheadBlocks = Math.Max(1, Math.Min(value, 16)); }
+        }
+
+        // Shared by all clones: is a decoder read waiting for network data, and
+        // how many bytes are cached contiguously from the latest read position.
+        // A byte-stream MediaSource reports the whole file as buffered, so the
+        // split HDR transport derives playable time from these instead.
+        internal bool IsReadWaiting => _blocks.WaitingReads > 0;
+        internal ulong ContiguousBytesAhead => _blocks.ContiguousBytesAhead();
+
+        // Keep filling the read-ahead window from the decoder's latest read
+        // even while the player is paused for a refill and issues no reads;
+        // otherwise the cache can never reach the refill target.
+        // Replaces bytes of the real file as they are read, for every clone
+        // (for example renaming one box type in the initialization segment).
+        // Call before handing the stream to the media source.
+        internal void PatchBytes(ulong offset, byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return;
+            lock (_stateGate)
+            {
+                ThrowIfDisposed();
+                var list = new List<KeyValuePair<ulong, byte[]>>(_blocks.Patches) { new KeyValuePair<ulong, byte[]>(offset, (byte[])bytes.Clone()) };
+                _blocks.Patches = list.ToArray();
+            }
+        }
+
+        private static void ApplyPatches(KeyValuePair<ulong, byte[]>[] patches, ulong start, IBuffer buffer, uint bufferOffset, uint count)
+        {
+            if (patches == null || patches.Length == 0 || count == 0) return;
+            ulong end = start + count;
+            foreach (var patch in patches)
+            {
+                ulong patchEnd = patch.Key + (ulong)patch.Value.Length;
+                if (patchEnd <= start || patch.Key >= end) continue;
+                ulong from = Math.Max(start, patch.Key), to = Math.Min(end, patchEnd);
+                patch.Value.CopyTo((int)(from - patch.Key), buffer, bufferOffset + (uint)(from - start), (int)(to - from));
+            }
+        }
+
+        // Appends bytes after the real file for every clone of this stream.
+        // Call before handing the stream to the media source.
+        internal void AppendTail(byte[] tail)
+        {
+            if (tail == null || tail.Length == 0) return;
+            lock (_stateGate)
+            {
+                ThrowIfDisposed();
+                _blocks.Tail = tail;
+                _size = _blocks.Size + (ulong)tail.Length;
+            }
+        }
+
+        internal async Task<byte[]> ReadPrefixAsync(CancellationToken ct)
+        {
+            var block = await GetBlockAsync(0, ct).ConfigureAwait(false);
+            return block.Bytes.ToArray();
+        }
+
+        internal void PumpReadAhead()
+        {
+            ulong last = _blocks.LastRead;
+            try { StartReadAhead(last / BlockSize * BlockSize); }
+            catch (ObjectDisposedException) { }
         }
 
         public bool CanRead { get { lock (_stateGate) return !_disposed; } }
@@ -94,8 +176,11 @@ namespace BiliXbox.Services
                 _position = position;
                 _seekVersion++;
                 ulong targetBlock = position / BlockSize * BlockSize;
-                if (_prefetchStart != targetBlock && _prefetchStart != targetBlock + BlockSize)
-                    obsoletePrefetch = _prefetchCancellation;
+                ulong window = (ulong)_blocks.ReadAheadBlocks * BlockSize;
+                bool nearby = window <= BlockSize
+                    ? _prefetchStart == targetBlock || _prefetchStart == targetBlock + BlockSize
+                    : targetBlock + window >= _prefetchStart && targetBlock <= _prefetchStart + window;
+                if (!nearby) obsoletePrefetch = _prefetchCancellation;
             }
             // Release this stream's obsolete prefetch. A shared request is only
             // canceled when no other clone or foreground reader still needs it.
@@ -160,11 +245,38 @@ namespace BiliXbox.Services
                         while (written < wanted)
                         {
                             linked.Token.ThrowIfCancellationRequested();
+                            var tail = _blocks.Tail;
+                            ulong baseSize = _blocks.Size;
+                            if (tail != null && position >= baseSize)
+                            {
+                                // Virtual bytes appended after the real file
+                                // (the synthesized random access index).
+                                int from = (int)(position - baseSize);
+                                int take = (int)Math.Min(wanted - written, (ulong)(tail.Length - from));
+                                if (take <= 0) break;
+                                tail.CopyTo(from, buffer, written, take);
+                                written += (uint)take;
+                                position += (ulong)take;
+                                buffer.Length = written;
+                                progress.Report(written);
+                                if ((options & InputStreamOptions.Partial) != 0) break;
+                                continue;
+                            }
                             ulong blockStart = position / BlockSize * BlockSize;
-                            var block = await GetBlockAsync(blockStart, linked.Token).ConfigureAwait(false);
+                            _blocks.NoteRead(position);
+                            CachedBlock block;
+                            if (!_blocks.TryGet(blockStart, out block))
+                            {
+                                // The decoder is blocked on the network: expose
+                                // it so playback can show buffering honestly.
+                                _blocks.BeginWait();
+                                try { block = await GetBlockAsync(blockStart, linked.Token).ConfigureAwait(false); }
+                                finally { _blocks.EndWait(); }
+                            }
                             var offset = (uint)(position - block.Start);
                             var available = Math.Min(wanted - written, block.Bytes.Length - offset);
                             block.Bytes.CopyTo(offset, buffer, written, available);
+                            ApplyPatches(_blocks.Patches, position, buffer, written, available);
                             written += available;
                             position += available;
                             buffer.Length = written;
@@ -193,15 +305,43 @@ namespace BiliXbox.Services
         private void StartReadAhead(ulong start)
         {
             CachedBlock cached;
+            int depth = _blocks.ReadAheadBlocks;
+            if (depth > 1) { StartDeepReadAhead(start, depth); return; }
             if (_blocks.TryGet(start, out cached)) return;
             lock (_stateGate)
             {
-                if (_disposed || start >= _size) return;
+                if (_disposed || start >= _blocks.Size) return;
                 if (_prefetchTask != null && !_prefetchTask.IsCompleted) return;
                 _prefetchCancellation?.Dispose();
                 _prefetchCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 _prefetchStart = start;
                 _prefetchTask = PrefetchAsync(start, _prefetchCancellation.Token);
+            }
+        }
+
+        private void StartDeepReadAhead(ulong start, int depth)
+        {
+            CancellationToken token;
+            ulong size;
+            lock (_stateGate)
+            {
+                if (_disposed || start >= _blocks.Size) return;
+                if (_prefetchCancellation == null || _prefetchCancellation.IsCancellationRequested)
+                {
+                    _prefetchCancellation?.Dispose();
+                    _prefetchCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                }
+                _prefetchStart = start;
+                token = _prefetchCancellation.Token;
+                size = _blocks.Size;
+            }
+            for (int index = 0; index < depth; ++index)
+            {
+                ulong block = start + (ulong)index * BlockSize;
+                if (block >= size) break;
+                CachedBlock cached;
+                if (_blocks.TryGet(block, out cached) || _blocks.IsInFlight(block)) continue;
+                _ = PrefetchAsync(block, token);
             }
         }
 
@@ -253,7 +393,10 @@ namespace BiliXbox.Services
         private sealed class BlockCache
         {
             // 32 x 256 KiB = at most 8 MiB, shared by all decoder clones.
-            private const int MaximumBlocks = 32;
+            // Larger split-transport blocks keep at most 32 MiB.
+            private readonly int MaximumBlocks;
+            internal readonly uint BlockBytes;
+            private readonly IHttpFilter _wrapper;
             private readonly object _gate = new object();
             private readonly Dictionary<ulong, CachedBlock> _items = new Dictionary<ulong, CachedBlock>();
             private readonly LinkedList<ulong> _recency = new LinkedList<ulong>();
@@ -268,16 +411,50 @@ namespace BiliXbox.Services
             private ulong _size;
             private (TimeSpan? Duration, int Status, string Host) _lastMediaRequest;
 
-            internal BlockCache(Uri uri, DownloadSpeedMeter meter)
+            internal BlockCache(Uri uri, DownloadSpeedMeter meter, uint blockBytes = DefaultBlockSize,
+                Func<IHttpFilter, IHttpFilter> wrapFilter = null)
             {
                 _uri = uri; _meter = meter;
+                BlockBytes = blockBytes;
+                MaximumBlocks = blockBytes <= DefaultBlockSize ? 32 : Math.Max(8, (int)(32u * 1024 * 1024 / blockBytes));
                 _filter = new HttpBaseProtocolFilter { AutomaticDecompression = false };
                 _filter.CacheControl.ReadBehavior = HttpCacheReadBehavior.NoCache;
                 _filter.CacheControl.WriteBehavior = HttpCacheWriteBehavior.NoCache;
-                _http = new HttpClient(_filter);
+                _wrapper = wrapFilter?.Invoke(_filter);
+                _http = new HttpClient(_wrapper ?? _filter);
                 _http.DefaultRequestHeaders.Referer = new Uri("https://www.bilibili.com/");
                 _http.DefaultRequestHeaders.TryAppendWithoutValidation("User-Agent", "Mozilla/5.0 BiliXbox/1.0");
                 _http.DefaultRequestHeaders.TryAppendWithoutValidation("Accept-Encoding", "identity");
+            }
+
+            private int _readAheadBlocks = 1;
+            internal int ReadAheadBlocks
+            {
+                get { return Volatile.Read(ref _readAheadBlocks); }
+                set { Volatile.Write(ref _readAheadBlocks, value); }
+            }
+
+            internal bool IsInFlight(ulong start) { lock (_gate) return _flights.ContainsKey(start); }
+
+            private int _waitingReads;
+            private ulong _lastRead;
+            internal int WaitingReads => Volatile.Read(ref _waitingReads);
+            internal void BeginWait() => Interlocked.Increment(ref _waitingReads);
+            internal void EndWait() => Interlocked.Decrement(ref _waitingReads);
+            internal void NoteRead(ulong position) { lock (_gate) _lastRead = position; }
+            internal ulong LastRead { get { lock (_gate) return _lastRead; } }
+            internal byte[] Tail;
+            internal KeyValuePair<ulong, byte[]>[] Patches = new KeyValuePair<ulong, byte[]>[0];
+
+            internal ulong ContiguousBytesAhead()
+            {
+                lock (_gate)
+                {
+                    ulong block = _lastRead / BlockBytes * BlockBytes, end = block;
+                    CachedBlock cached;
+                    while (_items.TryGetValue(end, out cached)) end += (ulong)cached.Bytes.Length;
+                    return end > _lastRead ? end - _lastRead : 0;
+                }
             }
 
             internal ulong Size { get { lock (_gate) return _size; } }
@@ -302,7 +479,7 @@ namespace BiliXbox.Services
                     _items.Clear(); _recency.Clear();
                 }
                 _lifetime.Cancel();
-                _http.Dispose(); _filter.Dispose(); _lifetime.Dispose();
+                _http.Dispose(); (_wrapper as IDisposable)?.Dispose(); _filter.Dispose(); _lifetime.Dispose();
             }
 
             internal async Task<CachedBlock> GetAsync(ulong start, CancellationToken token)
@@ -360,7 +537,12 @@ namespace BiliXbox.Services
                     using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(flight.Cancellation.Token))
                     {
                         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-                        var block = await FetchBlockAsync(start, timeout.Token).ConfigureAwait(false);
+                        CachedBlock block;
+                        // A wrapping accelerator switches itself to the native
+                        // route after a body failure, so one retry can recover.
+                        try { block = await FetchBlockAsync(start, timeout.Token).ConfigureAwait(false); }
+                        catch (Exception) when (_wrapper != null && !timeout.Token.IsCancellationRequested)
+                        { block = await FetchBlockAsync(start, timeout.Token).ConfigureAwait(false); }
                         lock (_gate)
                         {
                             timeout.Token.ThrowIfCancellationRequested();
@@ -402,7 +584,10 @@ namespace BiliXbox.Services
 
             private async Task<CachedBlock> FetchRangeAsync(ulong start, CancellationToken token, Action<int> recordStatus)
             {
-                ulong end = checked(start + BlockSize - 1);
+                ulong end = checked(start + BlockBytes - 1);
+                ulong known;
+                lock (_gate) known = _size;
+                if (known > 0 && end >= known) end = known - 1;
                 using (var request = new HttpRequestMessage(HttpMethod.Get, _uri))
                 {
                     request.Headers.TryAppendWithoutValidation("Range", "bytes=" + start + "-" + end);
@@ -424,7 +609,7 @@ namespace BiliXbox.Services
                             expected = range.LastBytePosition.Value - start + 1;
                         }
                         else if (response.StatusCode == HttpStatusCode.Ok && start == 0 && headers.ContentLength.HasValue
-                            && headers.ContentLength.Value > 0 && headers.ContentLength.Value <= BlockSize)
+                            && headers.ContentLength.Value > 0 && headers.ContentLength.Value <= BlockBytes)
                             total = expected = headers.ContentLength.Value;
                         else throw new IOException("播放线路不支持分段读取。");
                         if (headers.ContentLength.HasValue && headers.ContentLength.Value != expected)

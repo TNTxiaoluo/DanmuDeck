@@ -14,24 +14,23 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using BiliXbox.Controls;
+using System.Globalization;
 using Windows.Gaming.Input;
+using Windows.Media.Playback;
 using Windows.System;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Input;
 '@
 foreach ($taskFile in @('src\BiliXbox\Controls\ShoulderChordState.cs', 'src\BiliXbox\Controls\GamepadAuxiliaryState.cs', 'src\BiliXbox\Controls\FeedNavigationState.cs',
-    'src\BiliXbox\Controls\PlayerUiState.cs', 'src\BiliXbox\MainPage.GamepadExtras.cs', 'tools\tests\GamepadExtras.Tests.cs')) {
+    'src\BiliXbox\Controls\PlayerUiState.cs', 'src\BiliXbox\Controls\SeekAccelerationState.cs', 'src\BiliXbox\Controls\MediaTimeFormatter.cs',
+    'src\BiliXbox\MainPage.SeekAcceleration.cs', 'src\BiliXbox\MainPage.GamepadExtras.cs', 'tools\tests\GamepadExtras.Tests.cs')) {
     $taskText = [IO.File]::ReadAllText((Join-Path $taskRoot $taskFile))
     $taskSource += [Environment]::NewLine + [regex]::Replace($taskText, '(?m)^using [^;]+;\r?\n', '')
 }
-$taskPageSource = [IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/MainPage.xaml.cs'))
-$taskMatch = [regex]::Match($taskPageSource, '(?s)        private void Skip\(double seconds\)\s*\{.*?\r?\n        \}')
-if (-not $taskMatch.Success) { throw 'Production Skip method missing.' }
-$taskSource = $taskSource.Replace('/* PRODUCTION_SKIP */', $taskMatch.Value)
 $chords = [IO.File]::ReadAllText((Join-Path $taskRoot 'src/BiliXbox/MainPage.ViewingShortcuts.cs'))
 $poll = [regex]::Match($chords, '(?s)        private void PollViewingChord\(.*?\r?\n        \}')
 if (-not $poll.Success) { throw 'Production chord polling method missing.' }
 $taskSource = $taskSource.Replace('/* PRODUCTION_CHORD */', $poll.Value)
-Add-Type -TypeDefinition $taskSource -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414'
+Add-Type -TypeDefinition $taskSource -CompilerOptions '/langversion:7.3', '/nowarn:0649,0414,0067'
 [BiliXbox.MainPage]::RunExtrasTests()

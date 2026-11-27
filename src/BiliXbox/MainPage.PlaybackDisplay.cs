@@ -54,12 +54,12 @@ namespace BiliXbox
 
         private void CancelDisplayPlayRequest() => Cancel(ref _displayPlayCts);
 
-        private async Task ResetPlaybackDisplayAsync()
+        private async Task ResetPlaybackDisplayAsync(bool force = false)
         {
             CancelDisplayPlayRequest();
             var display = _playbackDisplay;
             if (display == null) return;
-            try { await display.ResetAsync(); }
+            try { await display.ResetAsync(force); }
             catch (Exception) { /* Playback is already paused; a later prepare retries the output mode. */ }
             if (!_disposed && _watching && !_inBackground) UpdateQualities();
         }

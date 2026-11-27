@@ -38,6 +38,8 @@ namespace BiliXbox
         private bool _gamepadHomeFeedReplacing;
         private object _gamepadHomeItem;
         private int _gamepadCount, _rawGamepadActions, _gamepadReadFailures;
+        // True after a physical mouse moved: cursor shown, focus frame hidden.
+        private bool _pointerMode;
         private string _lastRawGamepadDirection = "无";
 
         // The routed/CoreWindow handlers swallow only gamepad-generated A/D-pad
@@ -264,6 +266,9 @@ namespace BiliXbox
                 }
 
                 var frame = _rawGamepadInput.Sample(_gamepadClock.Elapsed, _activeGamepad, buttons, enabled);
+                // Real controller input leaves mouse pointer mode.
+                if (_pointerMode && enabled && (frame.Direction.HasValue || frame.ConfirmPressed || reading.Buttons != GamepadButtons.None
+                    || Math.Abs(reading.RightThumbstickY) > .5)) ExitPointerMode();
                 if (frame.ConfirmReleased)
                 {
                     _playerInput.ConfirmKeyUp(DateTimeOffset.UtcNow);
@@ -273,16 +278,18 @@ namespace BiliXbox
                 {
                     ++_rawGamepadActions;
                     _lastRawGamepadDirection = frame.Direction.Value.ToString();
+                    _lastRawGamepadDirectionAt = _gamepadClock.Elapsed;
                     DispatchPlayerGamepadKey(DirectionVirtualKey(frame.Direction.Value), frame.IsRepeat);
                 }
                 if (frame.ConfirmPressed)
                 {
                     ++_rawGamepadActions;
+                    _lastRawGamepadConfirmAt = _gamepadClock.Elapsed;
                     DispatchPlayerGamepadKey(VirtualKey.GamepadA, false);
                 }
                 PollAuxiliaryGamepad(reading, enabled && !_dialogOpen);
                 PollPlaybackSpeed(reading, enabled);
-                if (enabled && !_dialogOpen && !_watching && !_creatorVisible && !_libraryVisible && !_liveVisible) EnsureGamepadHomeFocus();
+                if (enabled && !_pointerMode && !_dialogOpen && !_watching && !_creatorVisible && !_libraryVisible && !_liveVisible) EnsureGamepadHomeFocus();
                 if (enabled) DisablePointerCursor();
                 UpdateGamepadFocusOutline();
             }
@@ -735,7 +742,7 @@ namespace BiliXbox
             {
                 // Explicit order reaches options outside the ScrollViewer's
                 // visible rectangle; focusing the next button scrolls it in.
-                var options = new Control[] { DanmakuSettingsCloseButton, DanmakuMaskButton, DanmakuAreaButton,
+                var options = new Control[] { DanmakuSettingsCloseButton, DanmakuMaskButton, DanmakuAreaButton, DanmakuTopMarginButton, DanmakuStrokeButton,
                     DanmakuOpacityButton, DanmakuDensityButton, DanmakuFontButton, DanmakuSpeedButton,
                     DanmakuOverlapButton, DanmakuMergeButton, DanmakuScrollButton, DanmakuTopButton,
                     DanmakuBottomButton, DanmakuColorButton, DanmakuCloudSyncButton,
@@ -978,7 +985,7 @@ namespace BiliXbox
 
         private void UpdateGamepadFocusOutline()
         {
-            if (_pausedRecommendationsVisible) { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
+            if (_pausedRecommendationsVisible || _pointerMode) { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }
             if (_creatorVisible || _libraryVisible || _liveVisible || _disposed || !_gamepadWindowActive || !_gamepadWindowVisible ||
                 _dialogOpen || _inputPaneVisible || (_watching && _playerInput.Mode != PlayerInputMode.Controls))
             { GamepadFocusOutline.Visibility = Visibility.Collapsed; return; }

@@ -89,7 +89,8 @@ namespace BiliXbox.Controls
             if (settings == null || double.IsNaN(height) || double.IsInfinity(height) || height <= 0 ||
                 double.IsNaN(lineHeight) || double.IsInfinity(lineHeight) || lineHeight <= 0) return rows;
             double bottom = height * settings.AreaFraction;
-            for (double y = 0; y + lineHeight <= bottom + 0.01 && rows.Count < 64; y += lineHeight)
+            double top = Math.Min(bottom, height * settings.TopMargin);
+            for (double y = top; y + lineHeight <= bottom + 0.01 && rows.Count < 64; y += lineHeight)
             {
                 if (settings.AvoidCenter && y < height * 0.68 && y + lineHeight > height * 0.32) continue;
                 rows.Add(y);

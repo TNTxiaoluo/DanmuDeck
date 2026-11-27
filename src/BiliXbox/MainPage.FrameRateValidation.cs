@@ -20,11 +20,13 @@ namespace BiliXbox
         // MediaSource does not expose video tracks. Only the bounded above-60
         // compatibility path needs this wrapper; ordinary playback keeps its source.
         private IMediaPlaybackSource CreateFrameRateValidationPlaybackSource(MediaSource source,
-            PlaybackInfo playback, int generation)
+            PlaybackInfo playback, int generation, MediaPlaybackItem existing = null)
         {
+            // existing: the playback item the source already belongs to
+            // (FFmpeg's own item), which must be the one given to the player.
             ClearNativeFrameRateValidationPlaybackItem();
-            if (source == null || playback?.RequiresNativeFrameRateValidation != true) return source;
-            var item = new MediaPlaybackItem(source);
+            if (source == null || playback?.RequiresNativeFrameRateValidation != true) return (IMediaPlaybackSource)existing ?? source;
+            var item = existing ?? new MediaPlaybackItem(source);
             _frameRateValidationItem = item;
             _frameRateValidationSource = source;
             _frameRateValidationPlayback = playback;

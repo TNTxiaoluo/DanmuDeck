@@ -7,7 +7,13 @@ namespace Windows.System
 {
     public enum VirtualKey { Other, GamepadLeftShoulder, GamepadRightShoulder, GamepadRightThumbstickUp, GamepadRightThumbstickDown }
 }
-namespace Windows.UI.Xaml { public class DependencyObject { } }
+namespace Windows.UI.Xaml
+{
+    public class DependencyObject { }
+    // Seek commits are driven explicitly by the test through SettleSeek.
+    public sealed class DispatcherTimer { public TimeSpan Interval; public event EventHandler<object> Tick; public void Start() { } public void Stop() { } }
+}
+namespace Windows.Media.Playback { public interface IMediaPlaybackSource { } public sealed class ExtraPlaybackSource : IMediaPlaybackSource { } }
 namespace Windows.UI.Xaml.Controls
 {
     public class Control : DependencyObject { }
@@ -56,6 +62,9 @@ namespace BiliXbox
         private bool _rawLb, _lbChordUsed, _virtualLb, _accountChordUsed;
         private bool _pausedRecommendationsVisible;
         private bool _pausedPullReady = true;
+        private int PausedTabSwitches;
+        private void SwitchPausedTab(int step) { PausedTabSwitches += step; }
+        private void ScrollPausedIntro(double delta) { }
         private bool CanOpenPausedRecommendations => false;
         private Task OpenPausedRecommendationsAsync() => Task.CompletedTask;
         private readonly ShoulderChordState _viewingChord = new ShoulderChordState();
@@ -86,7 +95,7 @@ namespace BiliXbox
         private string _status;
         private sealed class ExtraMedia
         {
-            public object Source = new object();
+            public Windows.Media.Playback.IMediaPlaybackSource Source = new Windows.Media.Playback.ExtraPlaybackSource();
             public ExtraSession PlaybackSession = new ExtraSession();
         }
         private sealed class ExtraSession
@@ -100,7 +109,18 @@ namespace BiliXbox
         private int _bufferInvalidations;
         private void InvalidatePlaybackBuffering() { ++_bufferInvalidations; }
         private void ShowControls() { ++_controlsShown; }
-        /* PRODUCTION_SKIP */
+        private TimeSpan? _restorePosition;
+        private bool _updatingSlider;
+        private sealed class ExtraSlider { public double Maximum = 1, Value; }
+        private sealed class ExtraLabel { public string Text = ""; }
+        private readonly ExtraSlider SeekSlider = new ExtraSlider();
+        private readonly ExtraLabel TimeLabel = new ExtraLabel();
+        private static string FormatTime(TimeSpan time) => MediaTimeFormatter.Format(time);
+        private void SeekToPosition(TimeSpan position) { _restorePosition = null; InvalidatePlaybackBuffering(); _media.PlaybackSession.Position = position; }
+        // Commits an accelerated preview as the idle timer would, then starts a
+        // fresh streak so each check measures one base step.
+        private void SettleSeek() { SeekCommitTimer_Tick(null, null); _seekAcceleration.Reset(); }
+
         private readonly List<HomeSection> _sections = new List<HomeSection>();
         private readonly List<Task> _sectionTransitions = new List<Task>();
         private Task _sectionLoad = Task.CompletedTask;
@@ -238,12 +258,15 @@ namespace BiliXbox
                 page.RawGamepadOwnsNavigation = false;
                 page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, false);
                 page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, true);
+                page.SettleSeek();
                 Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(25), "Virtual LB fallback seeks once and ignores autorepeat");
                 page._media.PlaybackSession.Position = TimeSpan.FromSeconds(2);
                 page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadLeftShoulder, false);
+                page.SettleSeek();
                 Check(page._media.PlaybackSession.Position == TimeSpan.Zero, "Five-second reverse seek clamps at video start");
                 page._media.PlaybackSession.Position = TimeSpan.FromSeconds(99);
                 page.HandleAuxiliaryGamepadKey(VirtualKey.GamepadRightShoulder, false);
+                page.SettleSeek();
                 Check(page._media.PlaybackSession.Position == TimeSpan.FromSeconds(100), "Five-second forward seek clamps at video end");
             }
             foreach (Action<MainPage> guard in new Action<MainPage>[] {

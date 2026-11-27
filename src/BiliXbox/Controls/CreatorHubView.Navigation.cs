@@ -133,7 +133,7 @@ namespace BiliXbox.Controls
             if (index >= 0)
             {
                 if (_pane == HubPane.Videos) RequestVideo(_videos[index]);
-                else if (_pane == HubPane.Dynamics) Run(() => OpenDynamicAsync(_dynamics[index]));
+                else if (_pane == HubPane.Dynamics) ActivateDynamic(_dynamics[index]);
                 else
                 {
                     var card = FindAncestor<CommentCard>(current, ActiveList) ?? ActiveList.Items[index] as CommentCard;

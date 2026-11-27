@@ -20,6 +20,7 @@ namespace Windows.Graphics.Display.Core
         public bool StereoEnabled { get; set; }
         public bool IsSmpte2084Supported { get; set; }
         public bool IsSdrLuminanceSupported { get; set; }
+        public bool IsDolbyVisionLowLatencySupported { get; set; }
         public HdmiDisplayColorSpace ColorSpace { get; set; }
     }
     public sealed class HdmiDisplayInformation
