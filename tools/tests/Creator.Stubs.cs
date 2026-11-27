@@ -102,7 +102,7 @@ namespace BiliXbox.CreatorTests
             opus["modules"]["module_dynamic"]["major"] = new JObject
             {
                 ["opus"] = new JObject { ["summary"] = new JObject { ["text"] = "图文摘要" }, ["pics"] = new JArray(new JObject { ["url"] = "http://i0.hdslb.com/opus.jpg" }) },
-                ["archive"] = new JObject { ["aid"] = 170001, ["bvid"] = "BV1xx411c7mD", ["title"] = "动态视频", ["cover"] = "//i0.hdslb.com/cover.jpg", ["duration_text"] = "1:37", ["stat"] = new JObject { ["play"] = "1万" } }
+                ["archive"] = new JObject { ["aid"] = 170001, ["bvid"] = "BV1xx411c7mD", ["title"] = "动态视频", ["desc"] = "视频简介&lt;测试&gt;", ["cover"] = "//i0.hdslb.com/cover.jpg", ["duration_text"] = "1:37", ["stat"] = new JObject { ["play"] = "1万" } }
             };
             const string nextOffset = "opaque+/=动态";
             Stub(request =>
@@ -123,6 +123,7 @@ namespace BiliXbox.CreatorTests
                 Check(entry.AuthorMid == 42 && entry.AvatarUrl == "https://i0.hdslb.com/avatar.jpg" && entry.LikeCount == 4294967296L, "dynamic avatar, account, 64-bit count retained");
                 Check(page.Items[1].ImageUrls.SequenceEqual(new[] { "https://i0.hdslb.com/draw.jpg" }), "draw images normalized and unsafe schemes rejected");
                 Check(page.Items[2].Content == "图文摘要" && page.Items[2].ImageUrls.Count == 1 && page.Items[2].Video.OwnerMid == 42 && page.Items[2].CommentTarget.Type == 1, "opus, archive and server video comment type supported");
+                Check(page.Items[2].Video.Description == "视频简介<测试>", "dynamic archive description is decoded and retained for the video card");
                 var later = await client.GetCreatorDynamicsAsync(42, page.NextOffset);
                 Check(later.Items[0].Id == "999" && !later.HasMore, "next dynamic cursor returns distinct later page");
                 Check(Transport.Requests.All(item => item.Method == "GET"), "browsing never posts content");
